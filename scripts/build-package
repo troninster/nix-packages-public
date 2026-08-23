@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <package>" >&2
+  exit 2
+fi
+
+package="$1"
+nix_build_cores="${NIX_BUILD_CORES:-1}"
+nix_max_jobs="${NIX_MAX_JOBS:-1}"
+out_link="${NIX_BUILD_OUT_LINK:-result-${package}}"
+require_cachix_push="${REQUIRE_CACHIX_PUSH:-0}"
+nix_flags=(
+  --print-build-logs
+  --cores "$nix_build_cores"
+  --max-jobs "$nix_max_jobs"
+)
+
+monitor_pid=""
+if [[ "${NIX_BUILD_MONITOR:-0}" == "1" ]]; then
+  (
+    while sleep 60; do
+      echo "::group::runner resources $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      free -h
+      df -h /
+      df -h /nix || true
+      echo "::endgroup::"
+    done
+  ) &
+  monitor_pid="$!"
+  trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+fi
+
+rm -f "$out_link"
+echo "Building .#${package}"
+nix build "${nix_flags[@]}" --out-link "$out_link" ".#${package}"
+
+if [[ -n "${CACHIX_CACHE_NAME:-}" && -n "${CACHIX_AUTH_TOKEN:-}" ]]; then
+  if ! command -v cachix >/dev/null 2>&1; then
+    echo "CACHIX_* is configured, but cachix is not available in PATH" >&2
+    exit 1
+  fi
+
+  echo "Pushing ${out_link} to Cachix cache ${CACHIX_CACHE_NAME}"
+  cachix push "$CACHIX_CACHE_NAME" "$out_link"
+else
+  if [[ "$require_cachix_push" == "1" ]]; then
+    echo "Cachix push is required, but CACHIX_CACHE_NAME or CACHIX_AUTH_TOKEN is not configured." >&2
+    exit 1
+  fi
+  echo "Skipping Cachix push; CACHIX_CACHE_NAME or CACHIX_AUTH_TOKEN is not configured."
+fi

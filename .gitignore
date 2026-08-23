@@ -1,0 +1,10 @@
+result
+result-*
+.direnv/
+.env
+.changed-packages
+*.log
+*.tmp
+*.bak
+__pycache__/
+*.pyc

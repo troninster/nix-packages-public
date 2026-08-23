@@ -1,0 +1,693 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+update_mode="all"
+case "$#" in
+  0)
+    ;;
+  1)
+    case "$1" in
+      --codex-only)
+        update_mode="codex-only"
+        ;;
+      --without-codex)
+        update_mode="without-codex"
+        ;;
+      *)
+        echo "usage: $0 [--codex-only|--without-codex]" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    echo "usage: $0 [--codex-only|--without-codex]" >&2
+    exit 2
+    ;;
+esac
+
+changed_packages_file="${UPDATE_PACKAGES_FILE:-.changed-packages}"
+archon_package_file="pkgs/archon/default.nix"
+camofox_package_file="pkgs/camofox-browser/default.nix"
+symphony_ts_package_file="pkgs/symphony-ts/default.nix"
+before_lock="$(mktemp)"
+before_archon_package="$(mktemp)"
+before_camofox_package="$(mktemp)"
+before_symphony_ts_package="$(mktemp)"
+codex_tags="$(mktemp)"
+trap 'rm -f "$before_lock" "$before_archon_package" "$before_camofox_package" "$before_symphony_ts_package" "$codex_tags"' EXIT
+
+cp flake.lock "$before_lock"
+cp "$archon_package_file" "$before_archon_package"
+cp "$camofox_package_file" "$before_camofox_package"
+cp "$symphony_ts_package_file" "$before_symphony_ts_package"
+rm -f "$changed_packages_file"
+
+# Track per-block outcomes for the final summary. Each entry is one of:
+#   OK | SKIPPED | FAILED
+declare -A block_status=()
+
+# run_block <name> <bash code...>
+#   Runs the supplied bash code in a subshell. Success/failure is logged but
+#   never aborts the rest of the script. Temporarily disables `set -e` and
+#   `pipefail` so a failure inside the block does not propagate.
+run_block() {
+  local name="$1"
+  shift
+  local rc=0
+  set +e
+  set +o pipefail
+  if "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  set -o pipefail
+  set -e
+  if [[ "$rc" -eq 0 ]]; then
+    echo "::group::OK ${name}"
+    echo "OK ${name}"
+    echo "::endgroup::"
+    if [[ "${block_status[$name]:-}" != "FAILED" ]]; then
+      block_status["$name"]="OK"
+    fi
+  else
+    echo "::warning::${name} failed (exit ${rc}); continuing with the rest of the updates." >&2
+    block_status["$name"]="FAILED"
+  fi
+}
+
+lock_fingerprint() {
+  local lock_file="$1"
+  local node="$2"
+
+  nix eval --impure --raw --expr "
+    let
+      lock = builtins.fromJSON (builtins.readFile ${lock_file});
+      locked = lock.nodes.\"${node}\".locked or {};
+    in builtins.toJSON {
+      rev = locked.rev or \"\";
+      narHash = locked.narHash or \"\";
+      lastModified = locked.lastModified or 0;
+    }
+  "
+}
+
+nix_string_value() {
+  local attr="$1"
+  local file="$2"
+
+  sed -n "s#^[[:space:]]*${attr}[[:space:]]*=[[:space:]]*\"\\([^\"]*\)\";[[:space:]]*\$#\\1#p" "$file" | head -n 1
+}
+
+replace_nix_string() {
+  local attr="$1"
+  local value="$2"
+  local file="$3"
+
+  ATTR="$attr" VALUE="$value" perl -0pi -e '
+    my $attr = $ENV{ATTR};
+    my $value = $ENV{VALUE};
+    my $count = s#(\b\Q$attr\E\s*=\s*")[^"]*(";)#$1$value$2#s;
+    die "failed to update $attr in $ARGV\n" if $count != 1;
+  ' "$file"
+}
+
+# Like replace_nix_string, but targets the Nth occurrence. symphony-ts has two
+# `hash = "..."` attributes — the source hash and the pnpm dependency hash — so
+# the single-match helper cannot address them.
+replace_nix_string_nth() {
+  local nth="$1"
+  local attr="$2"
+  local value="$3"
+  local file="$4"
+
+  NTH="$nth" ATTR="$attr" VALUE="$value" perl -0pi -e '
+    my $nth   = $ENV{NTH};
+    my $attr  = $ENV{ATTR};
+    my $value = $ENV{VALUE};
+    my $seen  = 0;
+    my $done  = 0;
+    s#(\b\Q$attr\E\s*=\s*")([^"]*)(";)#
+      $seen++;
+      if ($seen == $nth) { $done = 1; "$1$value$3" } else { "$1$2$3" }
+    #gse;
+    die "failed to update occurrence $nth of $attr in $ARGV\n" unless $done;
+  ' "$file"
+}
+
+
+json_field() {
+  local field="$1"
+
+  sed -n "s#.*\"${field}\":\"\\([^\"]*\)\".*#\\1#p" | head -n 1
+}
+
+json_file_field() {
+  local file="$1"
+  local field="$2"
+
+  perl -MJSON::PP -0777 -e '
+    my ($field, $file) = @ARGV;
+    open my $fh, "<", $file or die "failed to open $file: $!\n";
+    my $data = JSON::PP->new->decode(do { local $/; <$fh> });
+    my $value = $data->{$field};
+    die "missing JSON field $field in $file\n" if !defined $value || ref($value);
+    print "$value\n";
+  ' "$field" "$file"
+}
+
+latest_git_head() {
+  local repo_url="$1"
+  local rev
+
+  rev="$(git ls-remote "$repo_url" HEAD | awk '{print $1}')"
+  if [[ -z "$rev" ]]; then
+    echo "failed to read HEAD from $repo_url" >&2
+    return 1
+  fi
+  printf '%s\n' "$rev"
+}
+
+prefetch_json() {
+  local unpack="$1"
+  local url="$2"
+
+  if [[ "$unpack" == "true" ]]; then
+    nix store prefetch-file --json --unpack "$url"
+  else
+    nix store prefetch-file --json "$url"
+  fi
+}
+
+add_changed_package() {
+  local package="$1"
+  local existing
+
+  for existing in "${changed[@]:-}"; do
+    [[ "$existing" == "$package" ]] && return
+  done
+  changed+=("$package")
+}
+
+github_api_get() {
+  local url="$1"
+  local -a headers
+
+  headers=(
+    -H "Accept: application/vnd.github+json"
+    -H "X-GitHub-Api-Version: 2022-11-28"
+  )
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+
+  curl -fsSL "${headers[@]}" "$url"
+}
+
+nix_sri_from_github_sha256_digest() {
+  local digest="$1"
+
+  if [[ "$digest" =~ ^sha256:([0-9A-Fa-f]{64})$ ]]; then
+    nix hash convert --hash-algo sha256 --to sri "${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+}
+
+latest_archon_linux_x64_asset() {
+  github_api_get "https://api.github.com/repos/coleam00/Archon/releases/latest" \
+    | perl -MJSON::PP -0777 -e '
+      my $json = JSON::PP->new;
+      my $release = eval { $json->decode(do { local $/; <STDIN> }) };
+      die "failed to parse Archon latest release JSON\n" if $@ || ref($release) ne "HASH";
+
+      my $tag = $release->{tag_name} // "";
+      die "failed to read Archon latest release tag\n" if $tag eq "";
+
+      my $assets = $release->{assets};
+      die "failed to read Archon release assets\n" if ref($assets) ne "ARRAY";
+
+      for my $asset (@$assets) {
+        next if ref($asset) ne "HASH";
+        my $name = $asset->{name} // "";
+        my $url = $asset->{browser_download_url} // "";
+        my $digest = $asset->{digest};
+        $digest = "" if !defined $digest || ref($digest);
+
+        if ($name eq "archon-linux-x64" && $url ne "") {
+          print join("\t", $tag, $url, $digest), "\n";
+          exit 0;
+        }
+      }
+
+      die "failed to find the Archon Linux x86_64 release asset\n";
+    '
+}
+
+latest_camoufox_engine_asset() {
+  github_api_get "https://api.github.com/repos/daijro/camoufox/releases?per_page=50" \
+    | perl -MJSON::PP -0777 -e '
+      my $json = JSON::PP->new;
+      my $releases = eval { $json->decode(do { local $/; <STDIN> }) };
+      die "failed to parse Camoufox releases JSON\n" if $@ || ref($releases) ne "ARRAY";
+
+      for my $release (@$releases) {
+        next if ref($release) ne "HASH";
+        my $tag = $release->{tag_name} // "";
+        my $assets = $release->{assets};
+        next if ref($assets) ne "ARRAY";
+
+        for my $asset (@$assets) {
+          next if ref($asset) ne "HASH";
+          my $name = $asset->{name} // "";
+          my $url = $asset->{browser_download_url} // "";
+          if ($name =~ /^camoufox-(.+)-lin\.x86_64\.zip$/ && $url ne "") {
+            print join("\t", $tag, $1, $url), "\n";
+            exit 0;
+          }
+        }
+      }
+
+      die "failed to find a Camoufox Linux x86_64 release asset\n";
+    '
+}
+
+# Block: archon. Resolves the latest Archon release, prefetches its digest,
+# updates the package pins. Always tagged as "archon".
+block_archon() {
+  local current_archon_version current_archon_hash
+  local latest_archon_asset latest_archon_tag archon_url archon_digest
+  local latest_archon_version latest_archon_hash
+
+  current_archon_version="$(nix_string_value version "$archon_package_file")"
+  current_archon_hash="$(nix_string_value hash "$archon_package_file")"
+
+  if [[ -z "$current_archon_version" || -z "$current_archon_hash" ]]; then
+    echo "failed to read Archon package upstream pins from $archon_package_file" >&2
+    return 1
+  fi
+
+  latest_archon_asset="$(latest_archon_linux_x64_asset)"
+  IFS=$'\t' read -r latest_archon_tag archon_url archon_digest <<< "$latest_archon_asset"
+  latest_archon_version="${latest_archon_tag#v}"
+
+  if [[ -z "$latest_archon_tag" || -z "$latest_archon_version" || -z "$archon_url" ]]; then
+    echo "failed to resolve latest Archon release asset" >&2
+    return 1
+  fi
+
+  if [[ "$latest_archon_tag" != v* ]]; then
+    echo "unexpected Archon release tag format: $latest_archon_tag" >&2
+    return 1
+  fi
+
+  latest_archon_hash=""
+  if [[ -n "$archon_digest" ]]; then
+    if ! latest_archon_hash="$(nix_sri_from_github_sha256_digest "$archon_digest")"; then
+      echo "unsupported Archon asset digest: $archon_digest" >&2
+      return 1
+    fi
+  elif [[ "$latest_archon_version" != "$current_archon_version" ]]; then
+    local archon_asset_json
+    archon_asset_json="$(prefetch_json false "$archon_url")"
+    latest_archon_hash="$(printf '%s\n' "$archon_asset_json" | json_field hash)"
+    if [[ -z "$latest_archon_hash" ]]; then
+      echo "failed to prefetch Archon release asset" >&2
+      return 1
+    fi
+  fi
+
+  if [[ -n "$latest_archon_hash" && ( "$latest_archon_version" != "$current_archon_version" || "$latest_archon_hash" != "$current_archon_hash" ) ]]; then
+    echo "Updating Archon ${current_archon_version} -> ${latest_archon_version}"
+    replace_nix_string version "$latest_archon_version" "$archon_package_file"
+    replace_nix_string hash "$latest_archon_hash" "$archon_package_file"
+  fi
+}
+
+# Block: codex ref. Bumps the codex flake input to the latest stable rust-vX.Y.Z tag.
+# Always tagged as "codex_ref" (the changed[] entry is added later as "codex").
+block_codex_ref() {
+  local current_codex_ref latest_codex_ref
+
+  current_codex_ref="$(
+    perl -0ne '
+      if (/\bcodex\s*=\s*\{.*?\burl\s*=\s*"github:openai\/codex\/([^"]+)"/s) {
+        print "$1\n";
+        exit 0;
+      }
+      if (/\bcodex\.url\s*=\s*"github:openai\/codex\/([^"]+)"/s) {
+        print "$1\n";
+        exit 0;
+      }
+    ' flake.nix
+  )"
+  if [[ -z "$current_codex_ref" ]]; then
+    echo "failed to read codex input ref from flake.nix" >&2
+    return 1
+  fi
+
+  git ls-remote --tags --refs https://github.com/openai/codex.git 'refs/tags/rust-v*' > "$codex_tags"
+  latest_codex_ref="$(
+    sed -n 's#.*refs/tags/rust-v\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)$#\1 \2 \3 rust-v\1.\2.\3#p' "$codex_tags" \
+      | sort -n -k1,1 -k2,2 -k3,3 \
+      | tail -n 1 \
+      | awk '{print $4}'
+  )"
+  if [[ -z "$latest_codex_ref" ]]; then
+    echo "failed to find Codex rust-v* tags" >&2
+    return 1
+  fi
+
+  if [[ "$latest_codex_ref" != "$current_codex_ref" ]]; then
+    echo "Updating Codex input ${current_codex_ref} -> ${latest_codex_ref}"
+    LATEST_CODEX_REF="$latest_codex_ref" perl -0pi -e '
+      my $ref = $ENV{LATEST_CODEX_REF};
+      my $count = s#(\bcodex\s*=\s*\{.*?\burl\s*=\s*"github:openai/codex/)[^"]+(")#$1$ref$2#s;
+      if ($count == 0) {
+        $count = s#(\bcodex\.url\s*=\s*"github:openai/codex/)[^"]+(")#$1$ref$2#s;
+      }
+      die "failed to update codex input ref in flake.nix\n" if $count != 1;
+    ' flake.nix
+    codex_ref_changed=1
+  fi
+}
+
+# Block: camofox-browser (source rev + npm deps) AND camoufox-engine release.
+# Tagged as "camofox".
+block_camofox() {
+  local current_camofox_rev current_camoufox_engine_release_tag current_camoufox_engine_version
+  local latest_camofox_rev latest_camoufox_engine_asset latest_camoufox_engine_release_tag
+  local latest_camoufox_engine_version camoufox_engine_url
+
+  current_camofox_rev="$(nix_string_value camofoxBrowserRev "$camofox_package_file")"
+  current_camoufox_engine_release_tag="$(nix_string_value camoufoxEngineReleaseTag "$camofox_package_file")"
+  current_camoufox_engine_version="$(nix_string_value camoufoxEngineVersion "$camofox_package_file")"
+
+  if [[ -z "$current_camofox_rev" || -z "$current_camoufox_engine_release_tag" || -z "$current_camoufox_engine_version" ]]; then
+    echo "failed to read Camofox package upstream pins from $camofox_package_file" >&2
+    return 1
+  fi
+
+  latest_camofox_rev="$(latest_git_head https://github.com/jo-inc/camofox-browser.git)"
+  if [[ "$latest_camofox_rev" != "$current_camofox_rev" ]]; then
+    local camofox_src_json camofox_src_hash camofox_src_path camofox_browser_version camofox_npm_deps_hash
+
+    echo "Updating Camofox browser source ${current_camofox_rev} -> ${latest_camofox_rev}"
+    camofox_src_json="$(prefetch_json true "https://github.com/jo-inc/camofox-browser/archive/${latest_camofox_rev}.tar.gz")"
+    camofox_src_hash="$(printf '%s\n' "$camofox_src_json" | json_field hash)"
+    camofox_src_path="$(printf '%s\n' "$camofox_src_json" | json_field storePath)"
+    if [[ -z "$camofox_src_hash" || -z "$camofox_src_path" ]]; then
+      echo "failed to prefetch Camofox browser source" >&2
+      return 1
+    fi
+    if [[ ! -f "$camofox_src_path/package-lock.json" ]]; then
+      echo "Camofox browser source does not contain package-lock.json: $camofox_src_path" >&2
+      return 1
+    fi
+    camofox_browser_version="$(json_file_field "$camofox_src_path/package.json" version)"
+
+    camofox_npm_deps_hash="$(nix run nixpkgs#prefetch-npm-deps -- "$camofox_src_path/package-lock.json" | tail -n 1)"
+    if [[ -z "$camofox_npm_deps_hash" ]]; then
+      echo "failed to prefetch Camofox npm dependencies" >&2
+      return 1
+    fi
+
+    replace_nix_string camofoxBrowserVersion "$camofox_browser_version" "$camofox_package_file"
+    replace_nix_string camofoxBrowserRev "$latest_camofox_rev" "$camofox_package_file"
+    replace_nix_string camofoxBrowserHash "$camofox_src_hash" "$camofox_package_file"
+    replace_nix_string camofoxBrowserNpmDepsHash "$camofox_npm_deps_hash" "$camofox_package_file"
+  fi
+
+  latest_camoufox_engine_asset="$(latest_camoufox_engine_asset)"
+  latest_camoufox_engine_release_tag="$(printf '%s\n' "$latest_camoufox_engine_asset" | cut -f1)"
+  latest_camoufox_engine_version="$(printf '%s\n' "$latest_camoufox_engine_asset" | cut -f2)"
+  camoufox_engine_url="$(printf '%s\n' "$latest_camoufox_engine_asset" | cut -f3)"
+  if [[ -z "$latest_camoufox_engine_release_tag" || -z "$latest_camoufox_engine_version" || -z "$camoufox_engine_url" ]]; then
+    echo "failed to resolve latest Camoufox engine asset" >&2
+    return 1
+  fi
+
+  if [[ "$latest_camoufox_engine_release_tag" != "$current_camoufox_engine_release_tag" || "$latest_camoufox_engine_version" != "$current_camoufox_engine_version" ]]; then
+    local camoufox_engine_json camoufox_engine_hash
+
+    echo "Updating Camoufox engine ${current_camoufox_engine_release_tag}/${current_camoufox_engine_version} -> ${latest_camoufox_engine_release_tag}/${latest_camoufox_engine_version}"
+    camoufox_engine_json="$(prefetch_json false "$camoufox_engine_url")"
+    camoufox_engine_hash="$(printf '%s\n' "$camoufox_engine_json" | json_field hash)"
+    if [[ -z "$camoufox_engine_hash" ]]; then
+      echo "failed to prefetch Camoufox engine archive" >&2
+      return 1
+    fi
+
+    replace_nix_string camoufoxEngineReleaseTag "$latest_camoufox_engine_release_tag" "$camofox_package_file"
+    replace_nix_string camoufoxEngineVersion "$latest_camoufox_engine_version" "$camofox_package_file"
+    replace_nix_string camoufoxEngineHash "$camoufox_engine_hash" "$camofox_package_file"
+  fi
+}
+
+# Block: nix flake update. Captures stdout/stderr to a log file. The block is
+# treated as a real failure only if the lock file did not change at all
+# (neither codex nor hermes-agent fingerprint moved AND the codex ref bump
+# inside block_codex_ref did not change anything) AND the underlying command
+# exited non-zero. Tagged as "flake_update".
+block_flake_update() {
+  local log codex_before_local hermes_before_local codex_after_local hermes_after_local rc
+  local codex_lock_changed=0
+  local -a flake_inputs
+
+  log="$(mktemp)"
+  codex_before_local="$(lock_fingerprint "$before_lock" codex)"
+  hermes_before_local="$(lock_fingerprint "$before_lock" hermes-agent)"
+
+  case "$update_mode" in
+    all)
+      flake_inputs=(codex hermes-agent rust-overlay)
+      ;;
+    codex-only)
+      flake_inputs=(codex rust-overlay)
+      ;;
+    without-codex)
+      flake_inputs=(hermes-agent)
+      ;;
+  esac
+
+  rc=0
+  # The Codex lane also updates `rust-overlay`, which is wired in via
+  # codex.inputs.rust-overlay.overlays.default. Without this, a new Codex tag can
+  # require a rustc release that the locked overlay does not know about. The
+  # non-Codex lane updates Hermes alone because Codex and its toolchain were
+  # already handled and published before that lane starts.
+  nix flake update "${flake_inputs[@]}" >"$log" 2>&1 || rc=$?
+
+  codex_after_local="$(lock_fingerprint "$PWD/flake.lock" codex)"
+  hermes_after_local="$(lock_fingerprint "$PWD/flake.lock" hermes-agent)"
+  if [[ "$update_mode" == "codex-only" ]] && ! cmp -s "$before_lock" "$PWD/flake.lock"; then
+    codex_lock_changed=1
+  fi
+
+  # If anything actually changed (lock fingerprints OR the codex ref bump),
+  # treat the block as successful even if `nix flake update` printed warnings.
+  if [[ "$codex_before_local" != "$codex_after_local" \
+      || "$hermes_before_local" != "$hermes_after_local" \
+      || "$codex_lock_changed" == "1" \
+      || "${codex_ref_changed:-0}" == "1" ]]; then
+    rm -f "$log"
+    return 0
+  fi
+
+  # Nothing changed. Fall back to the real exit code.
+  if [[ "$rc" -ne 0 ]]; then
+    echo "::warning::nix flake update ${flake_inputs[*]} produced no changes and exited ${rc}; log:" >&2
+    sed 's/^/  /' "$log" >&2 || true
+    rm -f "$log"
+    return "$rc"
+  fi
+
+  rm -f "$log"
+  return 0
+}
+
+# Block: codex cargo hashes. When the Codex lock revision changes, regenerate
+# exactly one importCargoLock output hash for each git revision in its new
+# Cargo.lock. The subsequent package build remains the candidate verifier.
+block_codex_cargo_hashes() {
+  local codex_before_local codex_after_local codex_source
+
+  codex_before_local="$(lock_fingerprint "$before_lock" codex)"
+  codex_after_local="$(lock_fingerprint "$PWD/flake.lock" codex)"
+  if [[ "$codex_before_local" == "$codex_after_local" && "${codex_ref_changed:-0}" != "1" ]]; then
+    echo "Codex source is unchanged; keeping Cargo git dependency hashes."
+    return 0
+  fi
+
+  codex_source="$(
+    nix eval --impure --raw --expr \
+      '(builtins.getFlake (toString ./.)).inputs.codex.outPath'
+  )"
+  if [[ ! -f "$codex_source/codex-rs/Cargo.lock" ]]; then
+    echo "updated Codex input has no codex-rs/Cargo.lock" >&2
+    return 1
+  fi
+
+  nix shell --inputs-from . nixpkgs#nix-prefetch-git --command \
+    ./scripts/update-codex-cargo-hashes \
+      --lock-file "$codex_source/codex-rs/Cargo.lock" \
+      --flake-file flake.nix
+}
+
+# codex_ref_changed is written from inside block_codex_ref and read by the
+# flake_update block as well as the final changed[] computation. Default 0
+# for the case where block_codex_ref failed before flipping the flag.
+codex_ref_changed="${codex_ref_changed:-0}"
+
+
+block_symphony_ts() {
+  # symphony-ts is the owner's own fork, so it is followed on every run rather
+  # than on a weekly cadence: the point of the pin is that a push to the fork
+  # reaches this host. There is no release tag and no npm distribution, so the
+  # pin is the fork's main-branch head.
+  local current_rev latest_rev latest_version new_src_hash new_deps_hash
+
+  current_rev="$(nix_string_value rev "$symphony_ts_package_file")"
+  if [[ -z "$current_rev" ]]; then
+    echo "failed to read symphony-ts rev from $symphony_ts_package_file" >&2
+    return 1
+  fi
+
+  latest_rev="$(git ls-remote https://github.com/TarasKosh/symphony-ts.git refs/heads/main | cut -f1)"
+  if [[ -z "$latest_rev" ]]; then
+    echo "failed to query symphony-ts main head" >&2
+    return 1
+  fi
+
+  if [[ "$latest_rev" == "$current_rev" ]]; then
+    echo "symphony-ts is current (${current_rev:0:12})."
+    return 0
+  fi
+
+  echo "Updating symphony-ts ${current_rev:0:12} -> ${latest_rev:0:12}"
+
+  new_src_hash="$(nix store prefetch-file --json --unpack \
+    "https://github.com/TarasKosh/symphony-ts/archive/${latest_rev}.tar.gz" \
+    | nix run nixpkgs#jq -- -r .hash)"
+  if [[ -z "$new_src_hash" ]]; then
+    echo "failed to prefetch symphony-ts source" >&2
+    return 1
+  fi
+
+  replace_nix_string rev "$latest_rev" "$symphony_ts_package_file"
+  replace_nix_string hash "$new_src_hash" "$symphony_ts_package_file"
+
+  # The pnpm dependency hash has no prefetch tool the way npm does, so it is
+  # discovered from the fixed-output derivation mismatch: set a wrong hash on
+  # purpose, build, and read the expected value out of the failure.
+  replace_nix_string_nth 2 hash "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" "$symphony_ts_package_file"
+  new_deps_hash="$(nix build ".#symphony-ts" --no-link 2>&1 \
+    | sed -n 's#^[[:space:]]*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\)$#\1#p' | head -n 1)"
+  if [[ -z "$new_deps_hash" ]]; then
+    echo "failed to discover symphony-ts pnpm dependency hash" >&2
+    return 1
+  fi
+  replace_nix_string_nth 2 hash "$new_deps_hash" "$symphony_ts_package_file"
+
+  latest_version="$(nix run nixpkgs#curl -- -fsSL \
+    "https://raw.githubusercontent.com/TarasKosh/symphony-ts/${latest_rev}/package.json" \
+    | nix run nixpkgs#jq -- -r .version)"
+  if [[ -n "$latest_version" && "$latest_version" != "null" ]]; then
+    replace_nix_string version "$latest_version" "$symphony_ts_package_file"
+  fi
+}
+
+case "$update_mode" in
+  all)
+    run_block archon            block_archon
+    run_block codex_ref         block_codex_ref
+    run_block camofox           block_camofox
+    run_block symphony_ts       block_symphony_ts
+    run_block flake_update      block_flake_update
+    run_block codex_cargo_hashes block_codex_cargo_hashes
+    ;;
+  codex-only)
+    run_block codex_ref         block_codex_ref
+    run_block flake_update      block_flake_update
+    run_block codex_cargo_hashes block_codex_cargo_hashes
+    for required_block in codex_ref flake_update codex_cargo_hashes; do
+      if [[ "${block_status[$required_block]:-FAILED}" != "OK" ]]; then
+        echo "required Codex update block failed: $required_block" >&2
+        exit 1
+      fi
+    done
+    ;;
+  without-codex)
+    run_block archon            block_archon
+    run_block camofox           block_camofox
+    run_block symphony_ts       block_symphony_ts
+    run_block flake_update      block_flake_update
+    ;;
+esac
+
+# Recompute the final lock fingerprints from the now-current flake.lock for
+# the changed[] accounting below.
+codex_before="$(lock_fingerprint "$before_lock" codex)"
+hermes_before="$(lock_fingerprint "$before_lock" hermes-agent)"
+codex_after="$(lock_fingerprint "$PWD/flake.lock" codex)"
+hermes_after="$(lock_fingerprint "$PWD/flake.lock" hermes-agent)"
+
+changed=()
+codex_lock_changed=0
+if [[ "$update_mode" == "codex-only" ]] && ! cmp -s "$before_lock" "$PWD/flake.lock"; then
+  codex_lock_changed=1
+fi
+if [[ "$update_mode" != "without-codex" \
+    && ( "$codex_before" != "$codex_after" \
+      || "${codex_ref_changed:-0}" == "1" \
+      || "$codex_lock_changed" == "1" ) ]]; then
+  add_changed_package codex
+fi
+if [[ "$update_mode" != "codex-only" && "$hermes_before" != "$hermes_after" ]]; then
+  add_changed_package hermes-agent
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_archon_package" "$archon_package_file"; then
+  add_changed_package archon
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_camofox_package" "$camofox_package_file"; then
+  add_changed_package camofox-browser
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_symphony_ts_package" "$symphony_ts_package_file"; then
+  add_changed_package symphony-ts
+fi
+# Final summary: print OK/SKIPPED/FAILED for every block we ran.
+echo
+echo "::group::Update block summary"
+for name in archon codex_ref camofox symphony_ts flake_update codex_cargo_hashes; do
+  printf '  %-16s %s\n' "$name" "${block_status[$name]:-SKIPPED}"
+done
+echo "::endgroup::"
+
+# Summary of which packages ended up in `.changed-packages` and which blocks
+# contributed to that decision.
+echo
+echo "::group::Changed packages"
+if ((${#changed[@]} > 0)); then
+  printf '  %s\n' "${changed[@]}"
+else
+  echo "  (none)"
+fi
+echo "::endgroup::"
+
+if ((${#changed[@]} > 0)); then
+  printf '%s\n' "${changed[@]}" > "$changed_packages_file"
+  printf 'Changed packages: %s\n' "$(IFS=,; echo "${changed[*]}")"
+else
+  echo "No upstream input updates."
+fi
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  {
+    if ((${#changed[@]} > 0)); then
+      echo "changed=true"
+    else
+      echo "changed=false"
+    fi
+    printf 'packages=%s\n' "$(IFS=,; echo "${changed[*]}")"
+  } >> "$GITHUB_OUTPUT"
+fi

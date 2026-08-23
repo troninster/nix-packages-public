@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+nix_build_cores="${NIX_BUILD_CORES:-1}"
+nix_max_jobs="${NIX_MAX_JOBS:-1}"
+nix_flags=(
+  --print-build-logs
+  --cores "$nix_build_cores"
+  --max-jobs "$nix_max_jobs"
+)
+packages=(
+  archon
+  camofox-browser
+  camoufox-agent
+  codex
+  hermes-agent
+)
+
+nix flake check --no-build "${nix_flags[@]}"
+
+for package in "${packages[@]}"; do
+  NIX_BUILD_CORES="$nix_build_cores" \
+    NIX_MAX_JOBS="$nix_max_jobs" \
+    ./scripts/build-package "$package"
+done

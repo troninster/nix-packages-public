@@ -1,0 +1,74 @@
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+vexora - VEXORA system CLI skeleton
+
+Usage:
+  vexora --version
+  vexora health [--state-dir DIR] [--runtime-dir DIR]
+  vexora paths
+USAGE
+}
+
+state_dir="${VEXORA_STATE_DIR:-/var/lib/vexora}"
+runtime_dir="${VEXORA_RUNTIME_DIR:-/run/vexora}"
+cmd="${1:-help}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --state-dir)
+      state_dir="${2:?missing value for --state-dir}"
+      shift 2
+      ;;
+    --runtime-dir)
+      runtime_dir="${2:?missing value for --runtime-dir}"
+      shift 2
+      ;;
+    *)
+      printf 'vexora: unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$cmd" in
+  --version|version)
+    printf 'vexora %s\n' "${VEXORA_PACKAGE_VERSION:-0.0.0}"
+    ;;
+  health)
+    missing=0
+
+    if [ ! -d "$state_dir" ]; then
+      printf 'vexora health: missing state dir: %s\n' "$state_dir" >&2
+      missing=1
+    fi
+
+    if [ ! -d "$runtime_dir" ]; then
+      printf 'vexora health: missing runtime dir: %s\n' "$runtime_dir" >&2
+      missing=1
+    fi
+
+    if [ "$missing" -ne 0 ]; then
+      exit 1
+    fi
+
+    printf 'vexora health: ok\n'
+    ;;
+  paths)
+    printf 'state_dir=%s\n' "$state_dir"
+    printf 'runtime_dir=%s\n' "$runtime_dir"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    printf 'vexora: unknown command: %s\n' "$cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

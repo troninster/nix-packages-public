@@ -1,0 +1,463 @@
+name: Update Upstreams
+
+on:
+  schedule:
+    - cron: "27 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-updates
+  cancel-in-progress: false
+
+jobs:
+  prepare-codex:
+    name: Build verified Codex update
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
+      changed: ${{ steps.codex_update.outputs.changed }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Record base revision
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo docker image prune -af || true
+          sudo docker builder prune -af || true
+          sudo apt-get clean
+          echo "After cleanup:"
+          df -h /
+
+      - name: Maximize Nix build disk space
+        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        with:
+          build-mount-path: /nix
+          build-mount-path-ownership: root:root
+          root-reserve-mb: 8192
+          temp-reserve-mb: 1024
+          swap-size-mb: 8192
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+          remove-docker-images: true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      # Publish Codex before touching any unrelated package. A later failure in
+      # Camofox, Hermes, or another package cannot suppress or roll back a Codex
+      # pin that has already passed its own build and narrow publication job.
+      - name: Update Codex input
+        id: codex_update
+        run: ./scripts/update-upstream-inputs --codex-only
+
+      - name: Verify Codex candidate
+        if: ${{ steps.codex_update.outputs.changed == 'true' }}
+        run: |
+          set -euo pipefail
+          source_ref="$(
+            perl -0ne '
+              if (/\bcodex\s*=\s*\{.*?\burl\s*=\s*"github:openai\/codex\/([^"]+)"/s) {
+                print "$1\n";
+                exit 0;
+              }
+            ' flake.nix
+          )"
+          if [[ ! "$source_ref" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Codex source is not pinned to a stable release tag."
+            exit 1
+          fi
+
+          read -r lock_ref lock_rev < <(
+            perl -MJSON::PP -0777 -e '
+              my $lock = JSON::PP->new->decode(do { local $/; <STDIN> });
+              my $node = $lock->{nodes}{codex};
+              print join(" ", $node->{original}{ref} // "", $node->{locked}{rev} // ""), "\n";
+            ' < flake.lock
+          )
+          if [[ "$lock_ref" != "$source_ref" || ! "$lock_rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Codex lock identity does not match flake.nix."
+            exit 1
+          fi
+
+          direct_ref="refs/tags/${source_ref}"
+          peeled_ref="${direct_ref}^{}"
+          tag_commit="$(
+            git ls-remote --tags https://github.com/openai/codex.git \
+              "$direct_ref" "$peeled_ref" |
+              awk -v direct="$direct_ref" -v peeled="$peeled_ref" '
+                $2 == peeled { peeled_sha = $1 }
+                $2 == direct { direct_sha = $1 }
+                END { print peeled_sha != "" ? peeled_sha : direct_sha }
+              '
+          )"
+          if [[ "$tag_commit" != "$lock_rev" ]]; then
+            echo "::error::Codex lock revision does not match the official release tag."
+            exit 1
+          fi
+
+      - name: Detect Cachix configuration
+        id: cachix
+        if: ${{ steps.codex_update.outputs.changed == 'true' }}
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [[ -n "$CACHIX_CACHE_NAME" && -n "$CACHIX_AUTH_TOKEN" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure Cachix
+        if: ${{ steps.codex_update.outputs.changed == 'true' && steps.cachix.outputs.enabled == 'true' }}
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+
+      - name: Build verified Codex update
+        if: ${{ steps.codex_update.outputs.changed == 'true' }}
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          REQUIRE_CACHIX_PUSH: 1
+        run: NIX_BUILD_MONITOR=1 ./scripts/build-package codex
+
+      - name: Create Codex publication artifact
+        if: ${{ steps.codex_update.outputs.changed == 'true' }}
+        run: |
+          ./scripts/update-artifact create \
+            --phase codex \
+            --base-sha "${{ steps.base.outputs.sha }}" \
+            --packages-file .changed-packages \
+            --artifact-dir "$RUNNER_TEMP/codex-update"
+
+      - name: Upload Codex publication artifact
+        if: ${{ steps.codex_update.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-update-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/codex-update
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: No Codex update
+        if: ${{ steps.codex_update.outputs.changed != 'true' }}
+        run: echo "Codex release pin is already current."
+
+  publish-codex:
+    name: Publish verified Codex update
+    needs: prepare-codex
+    if: ${{ needs.prepare-codex.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout exact base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare-codex.outputs.base_sha }}
+          fetch-depth: 1
+
+      - name: Download Codex publication artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: codex-update-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/codex-update
+
+      - name: Revalidate and apply Codex artifact
+        env:
+          EXPECTED_BASE_SHA: ${{ needs.prepare-codex.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Prepare job returned an invalid base SHA."
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::Publisher checkout does not match the prepared base."
+            exit 1
+          fi
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$remote_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved after the Codex candidate was prepared; refusing stale publication."
+            exit 1
+          fi
+          ./scripts/update-artifact verify-apply \
+            --phase codex \
+            --base-sha "$EXPECTED_BASE_SHA" \
+            --artifact-dir "$RUNNER_TEMP/codex-update"
+
+      - name: Reverify Codex release identity
+        run: |
+          set -euo pipefail
+          source_ref="$(
+            perl -0ne '
+              if (/\bcodex\s*=\s*\{.*?\burl\s*=\s*"github:openai\/codex\/([^"]+)"/s) {
+                print "$1\n";
+                exit 0;
+              }
+            ' flake.nix
+          )"
+          read -r lock_ref lock_rev < <(
+            perl -MJSON::PP -0777 -e '
+              my $lock = JSON::PP->new->decode(do { local $/; <STDIN> });
+              my $node = $lock->{nodes}{codex};
+              print join(" ", $node->{original}{ref} // "", $node->{locked}{rev} // ""), "\n";
+            ' < flake.lock
+          )
+          if [[ ! "$source_ref" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ \
+              || "$lock_ref" != "$source_ref" \
+              || ! "$lock_rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Codex artifact has an invalid source/lock identity."
+            exit 1
+          fi
+          direct_ref="refs/tags/${source_ref}"
+          peeled_ref="${direct_ref}^{}"
+          tag_commit="$(
+            git ls-remote --tags https://github.com/openai/codex.git \
+              "$direct_ref" "$peeled_ref" |
+              awk -v direct="$direct_ref" -v peeled="$peeled_ref" '
+                $2 == peeled { peeled_sha = $1 }
+                $2 == direct { direct_sha = $1 }
+                END { print peeled_sha != "" ? peeled_sha : direct_sha }
+              '
+          )"
+          if [[ "$tag_commit" != "$lock_rev" ]]; then
+            echo "::error::Codex artifact does not match the official release tag."
+            exit 1
+          fi
+
+      - name: Commit and push verified Codex update
+        env:
+          EXPECTED_BASE_SHA: ${{ needs.prepare-codex.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "deps: update Codex pin [skip ci]"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$remote_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved before Codex publication; refusing non-current push."
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/main
+
+  prepare-remaining:
+    name: Build remaining upstream updates
+    needs:
+      - prepare-codex
+      - publish-codex
+    # A Codex prepare/build failure must not starve independent compatibility
+    # checks such as Hermes. If Codex preparation succeeds, still wait for its
+    # fail-closed publisher before taking a fresh main snapshot.
+    if: ${{ always() && (needs.prepare-codex.result == 'failure' || (needs.prepare-codex.result == 'success' && (needs.publish-codex.result == 'success' || needs.publish-codex.result == 'skipped'))) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
+      changed: ${{ steps.update.outputs.changed }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Record base revision
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo docker image prune -af || true
+          sudo docker builder prune -af || true
+          sudo apt-get clean
+          echo "After cleanup:"
+          df -h /
+
+      - name: Maximize Nix build disk space
+        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        with:
+          build-mount-path: /nix
+          build-mount-path-ownership: root:root
+          root-reserve-mb: 8192
+          temp-reserve-mb: 1024
+          swap-size-mb: 8192
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+          remove-docker-images: true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Update remaining upstream inputs
+        id: update
+        run: ./scripts/update-upstream-inputs --without-codex
+
+      # `Flake check` remains informational. Changed packages must still build;
+      # a later write job receives only the resulting narrow patch artifact.
+      - name: Flake check (informational)
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        continue-on-error: true
+        run: nix flake check --no-build --print-build-logs --cores 1 --max-jobs 1
+
+      - name: Detect Cachix configuration
+        id: cachix
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [[ -n "$CACHIX_CACHE_NAME" && -n "$CACHIX_AUTH_TOKEN" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure Cachix
+        if: ${{ steps.update.outputs.changed == 'true' && steps.cachix.outputs.enabled == 'true' }}
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+
+      - name: Build changed packages
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          REQUIRE_CACHIX_PUSH: 1
+        run: |
+          set -euo pipefail
+          while IFS= read -r package; do
+            NIX_BUILD_MONITOR=1 ./scripts/build-package "$package"
+          done < .changed-packages
+
+      - name: Create remaining publication artifact
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        run: |
+          ./scripts/update-artifact create \
+            --phase remaining \
+            --base-sha "${{ steps.base.outputs.sha }}" \
+            --packages-file .changed-packages \
+            --artifact-dir "$RUNNER_TEMP/remaining-update"
+
+      - name: Upload remaining publication artifact
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: remaining-update-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/remaining-update
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: No other upstream updates
+        if: ${{ steps.update.outputs.changed != 'true' }}
+        run: echo "Other upstream package pins are already current."
+
+  publish-remaining:
+    name: Publish remaining upstream updates
+    needs: prepare-remaining
+    if: ${{ needs.prepare-remaining.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout exact base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare-remaining.outputs.base_sha }}
+          fetch-depth: 1
+
+      - name: Download remaining publication artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: remaining-update-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/remaining-update
+
+      - name: Revalidate and apply remaining artifact
+        env:
+          EXPECTED_BASE_SHA: ${{ needs.prepare-remaining.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Prepare job returned an invalid base SHA."
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::Publisher checkout does not match the prepared base."
+            exit 1
+          fi
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$remote_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved after remaining updates were prepared; refusing stale publication."
+            exit 1
+          fi
+          ./scripts/update-artifact verify-apply \
+            --phase remaining \
+            --base-sha "$EXPECTED_BASE_SHA" \
+            --artifact-dir "$RUNNER_TEMP/remaining-update"
+
+      - name: Commit and push remaining updates
+        env:
+          EXPECTED_BASE_SHA: ${{ needs.prepare-remaining.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "deps: update upstream package pins [skip ci]"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$remote_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved before upstream publication; refusing non-current push."
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/main

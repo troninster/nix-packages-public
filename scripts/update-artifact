@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Create or verify the narrow patch artifact used by update-upstreams jobs."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+
+
+SCHEMA = 1
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+PHASE_PACKAGES = {
+    "codex": {"codex"},
+    "remaining": {
+        "archon",
+        "camofox-browser",
+        "hermes-agent",
+        "symphony-ts",
+    },
+}
+PHASE_PATHS = {
+    "codex": ("flake.nix", "flake.lock"),
+    "remaining": (
+        "flake.lock",
+        "pkgs/archon/default.nix",
+        "pkgs/camofox-browser/default.nix",
+        "pkgs/symphony-ts/default.nix",
+    ),
+}
+
+
+def fail(message: str) -> "NoReturn":
+    raise SystemExit(f"update-artifact: {message}")
+
+
+def git(*args: str, input_bytes: bytes | None = None) -> bytes:
+    result = subprocess.run(
+        ["git", *args],
+        input=input_bytes,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        fail(f"git {' '.join(args)} failed: {detail}")
+    return result.stdout
+
+
+def nul_paths(output: bytes) -> list[str]:
+    paths = []
+    for item in output.split(b"\0"):
+        if not item:
+            continue
+        path = item.decode("utf-8", "strict")
+        if path.startswith("/") or ".." in Path(path).parts:
+            fail(f"unsafe repository path: {path!r}")
+        paths.append(path)
+    return paths
+
+
+def read_packages(path: Path) -> list[str]:
+    try:
+        packages = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    except OSError as error:
+        fail(f"cannot read changed-package metadata: {error}")
+    if not packages:
+        fail("changed-package metadata is empty")
+    if any(not PACKAGE_RE.fullmatch(package) for package in packages):
+        fail("changed-package metadata contains an invalid package name")
+    if len(packages) != len(set(packages)):
+        fail("changed-package metadata contains duplicates")
+    return sorted(packages)
+
+
+def path_allowed(phase: str, path: str) -> bool:
+    for allowed in PHASE_PATHS[phase]:
+        if path == allowed or path.startswith(f"{allowed}/"):
+            return True
+    return False
+
+
+def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
+    if not paths:
+        fail("update patch is empty")
+    if any(not path_allowed(phase, path) for path in paths):
+        unexpected = sorted(path for path in paths if not path_allowed(phase, path))
+        fail(f"{phase} update contains unexpected paths: {', '.join(unexpected)}")
+
+    if phase == "codex":
+        return ["codex"]
+
+    packages = set()
+    for path in paths:
+        if path == "flake.lock":
+            packages.add("hermes-agent")
+        elif path == "pkgs/archon/default.nix":
+            packages.add("archon")
+        elif path == "pkgs/camofox-browser/default.nix":
+            packages.add("camofox-browser")
+        elif path == "pkgs/symphony-ts/default.nix":
+            packages.add("symphony-ts")
+    return sorted(packages)
+
+
+def validate_metadata(phase: str, base_sha: str, packages: list[str], paths: list[str]) -> None:
+    if phase not in PHASE_PACKAGES:
+        fail(f"unknown phase: {phase}")
+    if not SHA_RE.fullmatch(base_sha):
+        fail("base SHA must be a full lowercase commit SHA")
+    if not set(packages) <= PHASE_PACKAGES[phase]:
+        fail(f"{phase} update names a package outside its publication lane")
+    inferred = packages_for_paths(phase, paths)
+    if packages != inferred:
+        fail(
+            "changed-package metadata does not match patch paths: "
+            f"metadata={','.join(packages)} inferred={','.join(inferred)}"
+        )
+
+
+def validate_staged_modes(paths: list[str]) -> None:
+    for path in paths:
+        entries = git("ls-files", "--stage", "-z", "--", path).split(b"\0")
+        for entry in entries:
+            if not entry:
+                continue
+            mode = entry.split(b" ", 1)[0]
+            if mode not in {b"100644", b"100755"}:
+                fail(f"update artifact contains a non-regular Git mode at {path}")
+
+
+def current_head() -> str:
+    return git("rev-parse", "HEAD").decode().strip()
+
+
+def ensure_clean_index_and_tree(ignored: set[str] | None = None) -> None:
+    ignored = ignored or set()
+    tracked = set(nul_paths(git("diff", "--name-only", "-z")))
+    tracked.update(nul_paths(git("diff", "--cached", "--name-only", "-z")))
+    untracked = set(nul_paths(git("ls-files", "--others", "--exclude-standard", "-z")))
+    unexpected = sorted((tracked | untracked) - ignored)
+    if unexpected:
+        fail(f"working tree contains unexpected paths: {', '.join(unexpected)}")
+
+
+def create_artifact(phase: str, base_sha: str, packages_file: Path, output_dir: Path) -> None:
+    if current_head() != base_sha:
+        fail("current HEAD does not match the declared base SHA")
+    if git("diff", "--cached", "--name-only", "-z"):
+        fail("refusing to create an artifact from a non-empty index")
+    if packages_file.is_absolute() or ".." in packages_file.parts:
+        fail("changed-package metadata path must be repository-relative")
+    packages = read_packages(packages_file)
+
+    tracked = set(nul_paths(git("diff", "--name-only", "-z")))
+    untracked = set(nul_paths(git("ls-files", "--others", "--exclude-standard", "-z")))
+    changed_paths = sorted((tracked | untracked) - {str(packages_file)})
+    validate_metadata(phase, base_sha, packages, changed_paths)
+
+    git("add", "-A", "--", *changed_paths)
+    staged_paths = sorted(nul_paths(git("diff", "--cached", "--name-only", "-z")))
+    if staged_paths != changed_paths:
+        fail("staged update paths do not match the validated working-tree paths")
+    validate_staged_modes(staged_paths)
+
+    patch = git("diff", "--cached", "--binary", "--full-index")
+    if not patch:
+        fail("validated update produced an empty patch")
+
+    output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    patch_path = output_dir / "update.patch"
+    metadata_path = output_dir / "metadata.json"
+    patch_path.write_bytes(patch)
+    metadata = {
+        "schema": SCHEMA,
+        "phase": phase,
+        "base_sha": base_sha,
+        "changed_packages": packages,
+        "changed_paths": changed_paths,
+        "patch_sha256": hashlib.sha256(patch).hexdigest(),
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+
+
+def load_artifact(artifact_dir: Path) -> tuple[dict[str, object], bytes]:
+    try:
+        entries = sorted(path.name for path in artifact_dir.iterdir())
+    except OSError as error:
+        fail(f"cannot inspect artifact directory: {error}")
+    if entries != ["metadata.json", "update.patch"]:
+        fail(f"artifact contains unexpected entries: {', '.join(entries)}")
+    for name in entries:
+        path = artifact_dir / name
+        if path.is_symlink() or not path.is_file():
+            fail(f"artifact entry is not a regular file: {name}")
+    try:
+        metadata = json.loads((artifact_dir / "metadata.json").read_text())
+        patch = (artifact_dir / "update.patch").read_bytes()
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read artifact: {error}")
+    if not isinstance(metadata, dict):
+        fail("artifact metadata must be a JSON object")
+    return metadata, patch
+
+
+def verify_and_apply(phase: str, base_sha: str, artifact_dir: Path) -> None:
+    if current_head() != base_sha:
+        fail("publisher HEAD does not match the expected base SHA")
+    ensure_clean_index_and_tree()
+    metadata, patch = load_artifact(artifact_dir)
+    expected_keys = {
+        "schema",
+        "phase",
+        "base_sha",
+        "changed_packages",
+        "changed_paths",
+        "patch_sha256",
+    }
+    if set(metadata) != expected_keys or metadata.get("schema") != SCHEMA:
+        fail("artifact metadata has an unsupported schema")
+    if metadata.get("phase") != phase or metadata.get("base_sha") != base_sha:
+        fail("artifact phase or base SHA does not match the publisher request")
+
+    packages = metadata.get("changed_packages")
+    paths = metadata.get("changed_paths")
+    if not isinstance(packages, list) or not all(isinstance(item, str) for item in packages):
+        fail("artifact changed_packages must be a string list")
+    if not isinstance(paths, list) or not all(isinstance(item, str) for item in paths):
+        fail("artifact changed_paths must be a string list")
+    if packages != sorted(set(packages)) or paths != sorted(set(paths)):
+        fail("artifact package and path metadata must be sorted and unique")
+    validate_metadata(phase, base_sha, packages, paths)
+
+    patch_hash = hashlib.sha256(patch).hexdigest()
+    if metadata.get("patch_sha256") != patch_hash:
+        fail("artifact patch checksum does not match metadata")
+
+    git("apply", "--index", "--check", input_bytes=patch)
+    git("apply", "--index", input_bytes=patch)
+    staged_paths = sorted(nul_paths(git("diff", "--cached", "--name-only", "-z")))
+    if staged_paths != paths:
+        fail("applied patch paths do not match artifact metadata")
+    validate_staged_modes(staged_paths)
+    if packages_for_paths(phase, staged_paths) != packages:
+        fail("applied patch does not match changed-package metadata")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("create", "verify-apply"):
+        sub = subparsers.add_parser(command)
+        sub.add_argument("--phase", required=True, choices=sorted(PHASE_PACKAGES))
+        sub.add_argument("--base-sha", required=True)
+        sub.add_argument("--artifact-dir", required=True, type=Path)
+        if command == "create":
+            sub.add_argument("--packages-file", required=True, type=Path)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.command == "create":
+        create_artifact(args.phase, args.base_sha, args.packages_file, args.artifact_dir)
+    else:
+        verify_and_apply(args.phase, args.base_sha, args.artifact_dir)
+
+
+if __name__ == "__main__":
+    main()

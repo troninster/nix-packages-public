@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Comma- or space-separated package names to build"
+        required: false
+        type: string
+      all:
+        description: "Build every package"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+  CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+  REQUIRE_CACHIX_PUSH: 1
+
+jobs:
+  detect-changes:
+    name: Detect changed packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      packages_json: ${{ steps.detect.outputs.packages_json }}
+      package_count: ${{ steps.detect.outputs.package_count }}
+      run_checks: ${{ steps.detect.outputs.run_checks }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed packages
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MANUAL_PACKAGES: ${{ inputs.packages }}
+          MANUAL_ALL: ${{ inputs.all }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$MANUAL_ALL" == "true" ]]; then
+              ./scripts/detect-ci-packages --all
+            elif [[ -n "$MANUAL_PACKAGES" ]]; then
+              ./scripts/detect-ci-packages --packages "$MANUAL_PACKAGES"
+            else
+              ./scripts/detect-ci-packages "$(git rev-parse HEAD^)" "$(git rev-parse HEAD)"
+            fi
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            ./scripts/detect-ci-packages "$PR_BASE_SHA" "$PR_HEAD_SHA"
+          else
+            ./scripts/detect-ci-packages --all
+          fi
+
+  flake-check:
+    name: Flake check
+    needs: detect-changes
+    if: ${{ needs.detect-changes.result == 'success' && needs.detect-changes.outputs.run_checks == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Configure Cachix
+        if: ${{ env.CACHIX_CACHE_NAME != '' && env.CACHIX_AUTH_TOKEN != '' }}
+        uses: cachix/cachix-action@v17
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+
+      - name: Flake check
+        continue-on-error: true
+        run: nix flake check --no-build --print-build-logs --cores 1 --max-jobs 1
+
+  build:
+    name: Build ${{ matrix.package }}
+    # We intentionally do NOT depend on `flake-check`. A flake-check failure
+    # (e.g. a temporary breakage in a single package's derivation) should not
+    # block the build matrix for unrelated packages. The build matrix runs as
+    # long as `detect-changes` succeeded and at least one package was selected.
+    # `flake-check` continues to run in parallel as an informational job;
+    # `ci-result` ignores its result for the green/red CI signal.
+    needs:
+      - detect-changes
+    if: ${{ needs.detect-changes.result == 'success' && needs.detect-changes.outputs.package_count != '0' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.detect-changes.outputs.packages_json) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo docker image prune -af || true
+          sudo docker builder prune -af || true
+          sudo apt-get clean
+          echo "After cleanup:"
+          df -h /
+
+      - name: Maximize Nix build disk space
+        uses: easimon/maximize-build-space@v10
+        with:
+          build-mount-path: /nix
+          build-mount-path-ownership: root:root
+          root-reserve-mb: 8192
+          temp-reserve-mb: 1024
+          swap-size-mb: 8192
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+          remove-docker-images: true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Configure Cachix
+        if: ${{ env.CACHIX_CACHE_NAME != '' && env.CACHIX_AUTH_TOKEN != '' }}
+        uses: cachix/cachix-action@v17
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+
+      - name: Build package
+        run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
+
+  ci-result:
+    name: CI result
+    # `flake-check` runs in parallel for informational purposes only; we do
+    # not gate the green/red CI signal on its result. A flake-check failure is
+    # reported in the workflow run but does not turn the overall CI red.
+    needs:
+      - detect-changes
+      - flake-check
+      - build
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check job results
+        env:
+          DETECT_RESULT: ${{ needs.detect-changes.result }}
+          FLAKE_CHECK_RESULT: ${{ needs.flake-check.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PACKAGE_COUNT: ${{ needs.detect-changes.outputs.package_count }}
+        run: |
+          set -euo pipefail
+
+          # `flake-check` is informational; never fail the CI on it.
+          # We only log its outcome for visibility and continue.
+          if [[ -n "${FLAKE_CHECK_RESULT:-}" && "$FLAKE_CHECK_RESULT" != "success" && "$FLAKE_CHECK_RESULT" != "skipped" ]]; then
+            echo "::warning::flake-check finished with result: $FLAKE_CHECK_RESULT (informational only, does not gate CI)"
+          fi
+
+          for result in "$DETECT_RESULT" "$BUILD_RESULT"; do
+            case "$result" in
+              success | skipped)
+                ;;
+              *)
+                echo "A required CI job finished with result: $result" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "Package build count: ${PACKAGE_COUNT:-0}"

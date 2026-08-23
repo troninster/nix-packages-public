@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Regenerate importCargoLock hashes for Codex git dependencies."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit, urlunsplit
+
+
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SRI_RE = re.compile(r"^sha256-[A-Za-z0-9+/]{43}=$")
+START_RE = re.compile(r"^(?P<indent>\s*)codexCargoOutputHashes = lib: \{\s*$")
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+V8_ARCHIVE_RE = re.compile(
+    r'^(?P<indent>[ \t]*)RUSTY_V8_ARCHIVE = pkgs\.fetchurl \{\n'
+    r'(?P=indent)  url = "https://github\.com/openai/codex/releases/'
+    r'download/rusty-v8-v\$\{codexV8Version\}/'
+    r'librusty_v8_ptrcomp_sandbox_release_x86_64-unknown-linux-gnu\.a\.gz";\n'
+    r'(?P=indent)  hash = "(?P<hash>sha256-[A-Za-z0-9+/]{43}=)";\n'
+    r'(?P=indent)\};$',
+    re.MULTILINE,
+)
+V8_BINDING_RE = re.compile(
+    r'^(?P<indent>[ \t]*)RUSTY_V8_SRC_BINDING_PATH = pkgs\.fetchurl \{\n'
+    r'(?P=indent)  url = "https://github\.com/openai/codex/releases/'
+    r'download/rusty-v8-v\$\{codexV8Version\}/'
+    r'src_binding_ptrcomp_sandbox_release_x86_64-unknown-linux-gnu\.rs";\n'
+    r'(?P=indent)  hash = "(?P<hash>sha256-[A-Za-z0-9+/]{43}=)";\n'
+    r'(?P=indent)\};$',
+    re.MULTILINE,
+)
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"update-codex-cargo-hashes: {message}")
+
+
+def parse_git_source(source: str) -> tuple[str, str]:
+    if not source.startswith("git+"):
+        fail(f"unsupported Cargo git source: {source}")
+
+    location, separator, rev = source[4:].rpartition("#")
+    if not separator or not SHA_RE.fullmatch(rev):
+        fail(f"Cargo git source has no full lowercase commit SHA: {source}")
+
+    parsed = urlsplit(location)
+    if parsed.scheme != "https" or not parsed.hostname:
+        fail(f"Cargo git source is not a public HTTPS URL: {source}")
+    if parsed.username is not None or parsed.password is not None:
+        fail(f"Cargo git source must not contain credentials: {source}")
+    if parsed.fragment:
+        fail(f"Cargo git source contains an unexpected fragment: {source}")
+
+    if parsed.query:
+        try:
+            query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+        except ValueError:
+            fail(f"Cargo git source has an invalid query: {source}")
+        query_items = list(query.items())
+        if len(query_items) != 1:
+            fail(f"Cargo git source has an unsupported query: {source}")
+        query_name, query_values = query_items[0]
+        if (
+            query_name not in {"branch", "rev", "tag"}
+            or len(query_values) != 1
+            or not query_values[0]
+        ):
+            fail(f"Cargo git source has an unsupported query: {source}")
+
+    url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    return url, rev
+
+
+def cargo_packages(lock_file: Path) -> list[dict[str, object]]:
+    try:
+        with lock_file.open("rb") as handle:
+            lock = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        fail(f"failed to read {lock_file}: {error}")
+
+    packages = lock.get("package")
+    if not isinstance(packages, list):
+        fail(f"{lock_file} has no package list")
+
+    for package in packages:
+        if not isinstance(package, dict):
+            fail(f"{lock_file} contains an invalid package entry")
+    return packages
+
+
+def git_dependencies(
+    packages: list[dict[str, object]], lock_file: Path
+) -> dict[str, tuple[str, str]]:
+    dependencies: dict[str, tuple[str, str]] = {}
+    for package in packages:
+        source = package.get("source")
+        if not isinstance(source, str) or not source.startswith("git+"):
+            continue
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            fail(f"{lock_file} contains a git package without name and version")
+        key = f"{name}-{version}"
+        dependency = parse_git_source(source)
+        previous = dependencies.get(key)
+        if previous is not None and previous != dependency:
+            fail(f"git dependency key {key} refers to multiple sources")
+        dependencies[key] = dependency
+
+    return dependencies
+
+
+def v8_version(packages: list[dict[str, object]], lock_file: Path) -> str:
+    versions = [package.get("version") for package in packages if package.get("name") == "v8"]
+    if len(versions) != 1 or not isinstance(versions[0], str):
+        fail(f"{lock_file} must contain exactly one v8 package version")
+    version = versions[0]
+    if not VERSION_RE.fullmatch(version):
+        fail(f"{lock_file} contains an unsupported v8 version: {version}")
+    return version
+
+
+def representative_dependencies(
+    dependencies: dict[str, tuple[str, str]],
+) -> list[tuple[str, str, str]]:
+    by_revision: dict[str, tuple[str, list[str]]] = {}
+    for key, (url, rev) in dependencies.items():
+        if rev in by_revision:
+            previous_url, keys = by_revision[rev]
+            if previous_url != url:
+                fail(f"git revision {rev} is used by multiple repository URLs")
+            keys.append(key)
+        else:
+            by_revision[rev] = (url, [key])
+
+    return sorted(
+        (min(keys), url, rev) for rev, (url, keys) in by_revision.items()
+    )
+
+
+def prefetch_hash(url: str, rev: str) -> str:
+    result = subprocess.run(
+        ["nix-prefetch-git", "--quiet", "--url", url, "--rev", rev],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        fail(f"failed to prefetch {url} at {rev}")
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        fail(f"nix-prefetch-git returned invalid JSON for {url} at {rev}")
+    if not isinstance(metadata, dict) or metadata.get("rev") != rev:
+        fail(f"nix-prefetch-git returned an unexpected revision for {url} at {rev}")
+    output_hash = metadata.get("hash")
+    if not isinstance(output_hash, str) or not SRI_RE.fullmatch(output_hash):
+        fail(f"nix-prefetch-git returned an invalid hash for {url} at {rev}")
+    return output_hash
+
+
+def v8_archive_url(version: str) -> str:
+    return (
+        "https://github.com/openai/codex/releases/download/"
+        f"rusty-v8-v{version}/"
+        "librusty_v8_ptrcomp_sandbox_release_x86_64-unknown-linux-gnu.a.gz"
+    )
+
+
+def v8_binding_url(version: str) -> str:
+    return (
+        "https://github.com/openai/codex/releases/download/"
+        f"rusty-v8-v{version}/"
+        "src_binding_ptrcomp_sandbox_release_x86_64-unknown-linux-gnu.rs"
+    )
+
+
+def prefetch_v8_artifact(url: str, artifact: str) -> str:
+    result = subprocess.run(
+        ["nix", "store", "prefetch-file", "--json", url],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        fail(f"failed to prefetch rusty_v8 {artifact} {url}")
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        fail(f"nix returned invalid JSON for rusty_v8 {artifact} {url}")
+    output_hash = metadata.get("hash") if isinstance(metadata, dict) else None
+    if not isinstance(output_hash, str) or not SRI_RE.fullmatch(output_hash):
+        fail(f"nix returned an invalid hash for rusty_v8 {artifact} {url}")
+    return output_hash
+
+
+def render_cargo_hashes(
+    source: str, flake_file: Path, hashes: list[tuple[str, str]]
+) -> str:
+    lines = source.splitlines(keepends=True)
+    starts = [(index, START_RE.match(line.rstrip("\n"))) for index, line in enumerate(lines)]
+    starts = [(index, match) for index, match in starts if match is not None]
+    if len(starts) != 1:
+        fail(f"expected exactly one codexCargoOutputHashes block in {flake_file}")
+    start, match = starts[0]
+    assert match is not None
+    indent = match.group("indent")
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].rstrip("\n") == f"{indent}}};"),
+        None,
+    )
+    if end is None:
+        fail(f"unterminated codexCargoOutputHashes block in {flake_file}")
+
+    body = [f'{indent}  {json.dumps(key)} = {json.dumps(output_hash)};\n' for key, output_hash in hashes]
+    return "".join(lines[: start + 1] + body + lines[end:])
+
+
+def render_v8_hash(
+    source: str,
+    flake_file: Path,
+    pattern: re.Pattern[str],
+    artifact: str,
+    output_hash: str | None = None,
+) -> str:
+    matches = list(pattern.finditer(source))
+    if len(matches) != 1:
+        fail(f"expected exactly one derived rusty_v8 {artifact} block in {flake_file}")
+    if output_hash is None:
+        return source
+    match = matches[0]
+    return source[: match.start("hash")] + output_hash + source[match.end("hash") :]
+
+
+def atomic_write(flake_file: Path, updated: str) -> None:
+    temporary_name: str | None = None
+    try:
+        mode = stat.S_IMODE(flake_file.stat().st_mode)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=flake_file.parent, prefix=f".{flake_file.name}."
+        )
+        with os.fdopen(descriptor, "w") as handle:
+            os.fchmod(handle.fileno(), mode)
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, flake_file)
+        temporary_name = None
+    except OSError as error:
+        fail(f"failed to write {flake_file}: {error}")
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--lock-file", type=Path, required=True)
+    parser.add_argument("--flake-file", type=Path, required=True)
+    args = parser.parse_args()
+
+    packages = cargo_packages(args.lock_file)
+    dependencies = representative_dependencies(git_dependencies(packages, args.lock_file))
+    version = v8_version(packages, args.lock_file)
+
+    try:
+        source = args.flake_file.read_text()
+    except OSError as error:
+        fail(f"failed to read {args.flake_file}: {error}")
+
+    # Validate every target block before prefetching so an updater cannot
+    # partially accept a flake whose sandbox artifact pair is incomplete.
+    render_cargo_hashes(source, args.flake_file, [])
+    render_v8_hash(source, args.flake_file, V8_ARCHIVE_RE, "archive")
+    render_v8_hash(source, args.flake_file, V8_BINDING_RE, "binding")
+
+    hashes = [(key, prefetch_hash(url, rev)) for key, url, rev in dependencies]
+    archive_hash = prefetch_v8_artifact(v8_archive_url(version), "archive")
+    binding_hash = prefetch_v8_artifact(v8_binding_url(version), "binding")
+
+    updated = render_cargo_hashes(source, args.flake_file, hashes)
+    updated = render_v8_hash(
+        updated, args.flake_file, V8_ARCHIVE_RE, "archive", archive_hash
+    )
+    updated = render_v8_hash(
+        updated, args.flake_file, V8_BINDING_RE, "binding", binding_hash
+    )
+    atomic_write(args.flake_file, updated)
+    print(
+        f"Regenerated {len(hashes)} Codex git dependency output hashes and "
+        f"rusty_v8 sandbox artifact pair v{version}."
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except FileNotFoundError as error:
+        fail(f"required command not found: {error.filename}")

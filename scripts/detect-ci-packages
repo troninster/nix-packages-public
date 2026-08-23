@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+external_packages=(
+  codex
+  hermes-agent
+)
+
+discover_local_packages() {
+  local file
+
+  shopt -s nullglob
+  for file in pkgs/*/default.nix; do
+    file="${file#pkgs/}"
+    printf '%s\n' "${file%/default.nix}"
+  done | sort
+}
+
+mapfile -t local_packages < <(discover_local_packages)
+all_packages=("${local_packages[@]}" "${external_packages[@]}")
+
+packages=()
+all_selected="false"
+run_checks="false"
+lock_changed="false"
+base=""
+head=""
+
+write_output() {
+  local key="$1"
+  local value="$2"
+
+  printf '%s=%s\n' "$key" "$value"
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+  fi
+}
+
+add_package() {
+  local package="$1"
+  local existing
+
+  [[ "$all_selected" == "true" ]] && return
+  for existing in "${packages[@]}"; do
+    [[ "$existing" == "$package" ]] && return
+  done
+  packages+=("$package")
+}
+
+is_known_package() {
+  local package="$1"
+  local known
+
+  for known in "${all_packages[@]}"; do
+    [[ "$known" == "$package" ]] && return 0
+  done
+  return 1
+}
+
+select_requested_packages() {
+  local requested="$1"
+  local package
+
+  run_checks="true"
+  requested="${requested//,/ }"
+  for package in $requested; do
+    if ! is_known_package "$package"; then
+      echo "Unknown package requested: $package" >&2
+      exit 2
+    fi
+    add_package "$package"
+  done
+}
+
+select_all_packages() {
+  packages=("${all_packages[@]}")
+  all_selected="true"
+}
+
+json_packages() {
+  local first="true"
+  local package
+
+  printf '['
+  for package in "${packages[@]}"; do
+    if [[ "$first" == "true" ]]; then
+      first="false"
+    else
+      printf ','
+    fi
+    printf '"%s"' "$package"
+  done
+  printf ']'
+}
+
+lock_input_closure() {
+  local input_name="$1"
+
+  perl -MJSON::PP -0777 -e '
+    my $input_name = shift @ARGV;
+    my $json = JSON::PP->new->canonical;
+    my $data = eval { $json->decode(do { local $/; <STDIN> }) };
+    exit 2 if $@ || ref($data) ne "HASH";
+
+    my $root_name = $data->{root} // "root";
+    my $root = $data->{nodes}{$root_name} // {};
+    my $start = ref($root->{inputs}) eq "HASH" ? $root->{inputs}{$input_name} : undef;
+    if (!defined $start || ref($start)) {
+      print "null";
+      exit 0;
+    }
+
+    my %seen;
+    sub visit {
+      my ($node_name) = @_;
+      return if !defined $node_name || ref($node_name) || $seen{$node_name}++;
+
+      my $node = $data->{nodes}{$node_name};
+      return if ref($node) ne "HASH";
+
+      my $inputs = $node->{inputs};
+      if (ref($inputs) eq "HASH") {
+        for my $target (values %{$inputs}) {
+          visit($target) if defined $target && !ref($target);
+        }
+      }
+    }
+
+    visit($start);
+
+    my %closure;
+    for my $node_name (sort keys %seen) {
+      $closure{$node_name} = $data->{nodes}{$node_name};
+    }
+
+    print $json->encode(\%closure);
+  ' "$input_name"
+}
+
+lock_input_changed() {
+  local input_name="$1"
+  local old_closure
+  local new_closure
+
+  old_closure="$(git show "${base}:flake.lock" | lock_input_closure "$input_name")"
+  new_closure="$(git show "${head}:flake.lock" | lock_input_closure "$input_name")"
+
+  [[ "$old_closure" != "$new_closure" ]]
+}
+
+classify_lock_changes() {
+  local matched="false"
+
+  if lock_input_changed "nixpkgs"; then
+    select_all_packages
+    matched="true"
+  fi
+
+  if [[ "$all_selected" != "true" ]] && lock_input_changed "codex"; then
+    add_package "codex"
+    matched="true"
+  fi
+
+  if [[ "$all_selected" != "true" ]] && lock_input_changed "hermes-agent"; then
+    add_package "hermes-agent"
+    matched="true"
+  fi
+
+  if [[ "$matched" != "true" ]]; then
+    echo "flake.lock changed, but package input closures did not change."
+  fi
+}
+
+classify_file() {
+  local file="$1"
+  local local_package
+
+  case "$file" in
+    flake.nix)
+      run_checks="true"
+      select_all_packages
+      ;;
+    flake.lock)
+      run_checks="true"
+      lock_changed="true"
+      ;;
+    pkgs/*)
+      run_checks="true"
+      local_package="${file#pkgs/}"
+      local_package="${local_package%%/*}"
+      if is_known_package "$local_package"; then
+        add_package "$local_package"
+      elif [[ -n "$base" && -n "$head" ]] \
+        && git cat-file -e "${base}:pkgs/${local_package}/default.nix" 2>/dev/null \
+        && ! git cat-file -e "${head}:pkgs/${local_package}/default.nix" 2>/dev/null; then
+        echo "Removed package path no longer maps to a current package: $file"
+      else
+        echo "Changed package path does not map to a known package: $file" >&2
+        exit 2
+      fi
+      ;;
+    tools/camoufox-agent/*)
+      run_checks="true"
+      add_package "camoufox-agent"
+      ;;
+    .github/workflows/update-upstreams.yml | scripts/update-upstream-inputs)
+      run_checks="true"
+      add_package "archon"
+      add_package "camofox-browser"
+      add_package "codex"
+      add_package "hermes-agent"
+      ;;
+    scripts/update-codex-cargo-hashes)
+      run_checks="true"
+      add_package "codex"
+      ;;
+    scripts/build-all | scripts/build-package)
+      run_checks="true"
+      select_all_packages
+      ;;
+    .github/workflows/ci.yml | scripts/detect-ci-packages)
+      run_checks="true"
+      ;;
+    .github/dependabot.yml)
+      ;;
+    .github/* | scripts/*)
+      run_checks="true"
+      ;;
+    README.md | docs/* | AGENTS.md)
+      ;;
+    *)
+      run_checks="true"
+      select_all_packages
+      ;;
+  esac
+}
+
+usage() {
+  echo "usage: $0 --all | --packages <package[,package...]> | <base-commit> <head-commit>" >&2
+  exit 2
+}
+
+if [[ $# -eq 1 && "$1" == "--all" ]]; then
+  run_checks="true"
+  select_all_packages
+elif [[ $# -eq 2 && "$1" == "--packages" ]]; then
+  select_requested_packages "$2"
+elif [[ $# -eq 2 ]]; then
+  base="$1"
+  head="$2"
+
+  if ! git cat-file -e "${base}^{commit}" 2>/dev/null || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+    echo "Unable to resolve comparison commits; falling back to all packages." >&2
+    run_checks="true"
+    select_all_packages
+  else
+    mapfile -t changed_files < <(git diff --name-only "$base" "$head")
+    if [[ ${#changed_files[@]} -eq 0 ]]; then
+      echo "No changed files detected."
+    else
+      printf 'Changed files:\n'
+      printf '  %s\n' "${changed_files[@]}"
+      for file in "${changed_files[@]}"; do
+        classify_file "$file"
+      done
+
+      if [[ "$lock_changed" == "true" && "$all_selected" != "true" ]]; then
+        classify_lock_changes
+      fi
+    fi
+  fi
+else
+  usage
+fi
+
+packages_json="$(json_packages)"
+write_output "packages_json" "$packages_json"
+write_output "package_count" "${#packages[@]}"
+write_output "run_checks" "$run_checks"
