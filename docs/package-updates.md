@@ -17,6 +17,13 @@ It updates:
 - `camoufox engine` by updating the Linux x86_64 release asset pin.
 - `symphony-ts` by following the owner fork's `main` branch and updating its
   source and pnpm dependency hashes when needed.
+- `devspace` and `freellmapi` by following their latest stable release tags
+  and refreshing their source/npm dependency hashes.
+- `github-cli` and `notion-cli` by following their latest stable release tags
+  and refreshing their source/vendor hashes.
+- `omp` by following the latest `omp-linux-x64` release asset.
+- `supabase-cli` by following the latest stable release and refreshing the
+  nested `apps/cli-go` source/vendor hashes.
 
 Only packages whose upstream pin changed are built. Codex is prepared and
 published in its own lane first. If Codex preparation or its build fails, the
@@ -41,15 +48,33 @@ Hermes input through `follows`, and remains on that selected Hermes pin and its
 own locked `nix-packages` revision until both are promoted and activated there.
 
 Oh My Pi is packaged from its official x86_64 Linux release asset with a fixed
-hash and exported as `omp`. It is updated manually by changing the
-version and source hash under `pkgs/omp`, building `.#omp`, and reviewing the
-resulting pull request; it is not part of the scheduled upstream workflow.
+hash and exported as `omp`. The scheduled workflow updates only the
+`omp-linux-x64` asset and still requires the package build before publication.
 
 DevSpace is packaged from a pinned upstream source revision with fixed source
-and npm dependency hashes. Update `pkgs/devspace` and review a successful
-`.#devspace` build when promoting an upstream release.
+and npm dependency hashes. Its updater refuses a release whose package-lock
+shape no longer matches the integrity repair in `pkgs/devspace/default.nix`;
+that is an intentional manual-maintenance stop rather than a speculative
+lockfile rewrite.
+
+FreeLLMAPI intentionally builds and installs only its server and client
+workspaces. A new upstream CLI workspace must not silently expand the package
+surface.
+
+Supabase CLI is built from the upstream `apps/cli-go` module. A release that
+moves that module or changes its version ldflags must stop the updater for
+manual review.
+
+Render CLI remains manually updated and is deliberately outside the scheduled
+upstream workflow. Local `vexora` and `camoufox-agent` sources have no external
+release lane and are also excluded.
 
 ## Pull Request CI Targeting
+
+Normal heavy package builds and Cachix publication are owned by GitHub Actions.
+The weak local host runs lightweight tests and parsing checks and consumes the
+published outputs; a local heavy build is only a bounded incident-diagnostic
+exception, not the standard release gate.
 
 `.github/workflows/ci.yml` uses `scripts/detect-ci-packages` to compare the
 base and head commits before creating the package build matrix.

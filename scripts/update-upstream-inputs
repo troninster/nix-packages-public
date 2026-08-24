@@ -29,34 +29,63 @@ changed_packages_file="${UPDATE_PACKAGES_FILE:-.changed-packages}"
 archon_package_file="pkgs/archon/default.nix"
 camofox_package_file="pkgs/camofox-browser/default.nix"
 symphony_ts_package_file="pkgs/symphony-ts/default.nix"
+devspace_package_file="pkgs/devspace/default.nix"
+freellmapi_package_file="pkgs/freellmapi/default.nix"
+github_cli_package_file="pkgs/github-cli/default.nix"
+notion_cli_package_file="pkgs/notion-cli/default.nix"
+omp_package_file="pkgs/omp/default.nix"
+supabase_cli_package_file="pkgs/supabase-cli/default.nix"
 before_lock="$(mktemp)"
 before_archon_package="$(mktemp)"
 before_camofox_package="$(mktemp)"
 before_symphony_ts_package="$(mktemp)"
+before_devspace_package="$(mktemp)"
+before_freellmapi_package="$(mktemp)"
+before_github_cli_package="$(mktemp)"
+before_notion_cli_package="$(mktemp)"
+before_omp_package="$(mktemp)"
+before_supabase_cli_package="$(mktemp)"
 codex_tags="$(mktemp)"
-trap 'rm -f "$before_lock" "$before_archon_package" "$before_camofox_package" "$before_symphony_ts_package" "$codex_tags"' EXIT
+trap 'rm -f "$before_lock" "$before_archon_package" "$before_camofox_package" "$before_symphony_ts_package" "$before_devspace_package" "$before_freellmapi_package" "$before_github_cli_package" "$before_notion_cli_package" "$before_omp_package" "$before_supabase_cli_package" "$codex_tags"' EXIT
 
 cp flake.lock "$before_lock"
 cp "$archon_package_file" "$before_archon_package"
 cp "$camofox_package_file" "$before_camofox_package"
 cp "$symphony_ts_package_file" "$before_symphony_ts_package"
+cp "$devspace_package_file" "$before_devspace_package"
+cp "$freellmapi_package_file" "$before_freellmapi_package"
+cp "$github_cli_package_file" "$before_github_cli_package"
+cp "$notion_cli_package_file" "$before_notion_cli_package"
+cp "$omp_package_file" "$before_omp_package"
+cp "$supabase_cli_package_file" "$before_supabase_cli_package"
 rm -f "$changed_packages_file"
 
 # Track per-block outcomes for the final summary. Each entry is one of:
 #   OK | SKIPPED | FAILED
 declare -A block_status=()
 
-# run_block <name> <bash code...>
-#   Runs the supplied bash code in a subshell. Success/failure is logged but
-#   never aborts the rest of the script. Temporarily disables `set -e` and
-#   `pipefail` so a failure inside the block does not propagate.
+# run_block <name> <function> <touched-file...>
+#   Runs the supplied block while snapshotting its declared files. A failed
+#   block is rolled back and logged, but does not abort the remaining updates.
 run_block() {
   local name="$1"
   shift
+  local block_function="$1"
+  shift
+  local -a touched_files=("$@")
+  local -a backup_files=()
+  local file backup restore_failed
   local rc=0
+
+  for file in "${touched_files[@]}"; do
+    backup="$(mktemp)"
+    cp "$file" "$backup"
+    backup_files+=("$backup")
+  done
+
   set +e
   set +o pipefail
-  if "$@"; then
+  if "$block_function"; then
     rc=0
   else
     rc=$?
@@ -64,6 +93,7 @@ run_block() {
   set -o pipefail
   set -e
   if [[ "$rc" -eq 0 ]]; then
+    rm -f "${backup_files[@]}"
     echo "::group::OK ${name}"
     echo "OK ${name}"
     echo "::endgroup::"
@@ -71,6 +101,18 @@ run_block() {
       block_status["$name"]="OK"
     fi
   else
+    restore_failed=0
+    for ((i = 0; i < ${#touched_files[@]}; i++)); do
+      file="${touched_files[$i]}"
+      backup="${backup_files[$i]}"
+      cp "$backup" "$file" || restore_failed=1
+      cmp -s "$backup" "$file" || restore_failed=1
+    done
+    rm -f "${backup_files[@]}"
+    if [[ "$restore_failed" -ne 0 ]]; then
+      echo "::error::${name} failed and its transaction could not be restored" >&2
+      exit 1
+    fi
     echo "::warning::${name} failed (exit ${rc}); continuing with the rest of the updates." >&2
     block_status["$name"]="FAILED"
   fi
@@ -212,6 +254,183 @@ nix_sri_from_github_sha256_digest() {
   else
     return 1
   fi
+}
+
+latest_release_tag() {
+  local repo="$1"
+
+  github_api_get "https://api.github.com/repos/${repo}/releases/latest" \
+    | perl -MJSON::PP -0777 -e '
+      my $release = eval { JSON::PP->new->decode(do { local $/; <STDIN> }) };
+      die "failed to parse latest release JSON\n" if $@ || ref($release) ne "HASH";
+      my $tag = $release->{tag_name} // "";
+      die "latest release has no tag\n" if $tag eq "";
+      print "$tag\n";
+    '
+}
+
+latest_release_asset() {
+  local repo="$1"
+  local asset_name="$2"
+
+  REPO="$repo" ASSET_NAME="$asset_name" github_api_get \
+    "https://api.github.com/repos/${repo}/releases/latest" \
+    | REPO="$repo" ASSET_NAME="$asset_name" perl -MJSON::PP -0777 -e '
+      my $release = eval { JSON::PP->new->decode(do { local $/; <STDIN> }) };
+      die "failed to parse latest release JSON for $ENV{REPO}\n"
+        if $@ || ref($release) ne "HASH";
+      my $tag = $release->{tag_name} // "";
+      my $assets = $release->{assets};
+      die "latest release has no assets for $ENV{REPO}\n"
+        if $tag eq "" || ref($assets) ne "ARRAY";
+      for my $asset (@$assets) {
+        next if ref($asset) ne "HASH";
+        next if ($asset->{name} // "") ne $ENV{ASSET_NAME};
+        my $url = $asset->{browser_download_url} // "";
+        my $digest = $asset->{digest} // "";
+        die "latest release asset has no URL\n" if $url eq "";
+        print join("\t", $tag, $url, $digest), "\n";
+        exit 0;
+      }
+      die "latest release asset $ENV{ASSET_NAME} not found for $ENV{REPO}\n";
+    '
+}
+
+tag_commit() {
+  local repo_url="$1"
+  local tag="$2"
+  local direct_ref="refs/tags/${tag}"
+  local peeled_ref="${direct_ref}^{}"
+
+  git ls-remote --tags "$repo_url" "$direct_ref" "$peeled_ref" \
+    | awk -v direct="$direct_ref" -v peeled="$peeled_ref" '
+      $2 == peeled { peeled_sha = $1 }
+      $2 == direct { direct_sha = $1 }
+      END { print peeled_sha != "" ? peeled_sha : direct_sha }
+    '
+}
+
+discover_nix_fixed_hash() {
+  local package="$1"
+  local file="$2"
+  local attr="$3"
+  local old_hash candidate_hash log discovered
+  local backup
+
+  old_hash="$(nix_string_value "$attr" "$file")"
+  if [[ -z "$old_hash" ]]; then
+    echo "failed to read $attr from $file" >&2
+    return 1
+  fi
+
+  candidate_hash="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  backup="$(mktemp)"
+  cp "$file" "$backup"
+  replace_nix_string "$attr" "$candidate_hash" "$file"
+  log="$(mktemp)"
+  if nix build ".#${package}" --no-link --cores 1 --max-jobs 1 >"$log" 2>&1; then
+    cp "$backup" "$file"
+    rm -f "$backup" "$log"
+    echo "${package} accepted the fixed-output placeholder for $attr" >&2
+    return 1
+  fi
+
+  discovered="$(sed -n 's#^[[:space:]]*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\)$#\1#p' "$log" | tail -n 1)"
+  rm -f "$log"
+  if [[ ! "$discovered" =~ ^sha256-[A-Za-z0-9+/]{43}=$ ]]; then
+    cp "$backup" "$file"
+    rm -f "$backup"
+    echo "failed to discover $attr for ${package}" >&2
+    return 1
+  fi
+
+  replace_nix_string "$attr" "$discovered" "$file"
+  rm -f "$backup"
+  printf '%s\n' "$discovered"
+}
+
+update_tagged_go_package() {
+  local package="$1"
+  local file="$2"
+  local repo="$3"
+  local current_version latest_tag latest_version source_json source_hash
+  local backup
+
+  current_version="$(nix_string_value version "$file")"
+  latest_tag="$(latest_release_tag "$repo")"
+  latest_version="${latest_tag#v}"
+  if [[ ! "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "unexpected release tag for ${repo}: ${latest_tag}" >&2
+    return 1
+  fi
+  if [[ "$latest_version" == "$current_version" ]]; then
+    echo "${package} is current (${current_version})."
+    return 0
+  fi
+
+  source_json="$(prefetch_json false "https://github.com/${repo}/archive/${latest_tag}.tar.gz")"
+  source_hash="$(printf '%s\n' "$source_json" | json_field hash)"
+  if [[ -z "$source_hash" ]]; then
+    echo "failed to prefetch ${package} source" >&2
+    return 1
+  fi
+
+  backup="$(mktemp)"
+  cp "$file" "$backup"
+  replace_nix_string version "$latest_version" "$file"
+  replace_nix_string hash "$source_hash" "$file"
+  if ! discover_nix_fixed_hash "$package" "$file" vendorHash >/dev/null; then
+    cp "$backup" "$file"
+    rm -f "$backup"
+    return 1
+  fi
+  rm -f "$backup"
+  echo "Updated ${package} ${current_version} -> ${latest_version}"
+}
+
+update_tagged_npm_package() {
+  local package="$1"
+  local file="$2"
+  local repo="$3"
+  local current_version latest_tag latest_version latest_rev source_json source_hash
+  local backup
+
+  current_version="$(nix_string_value version "$file")"
+  latest_tag="$(latest_release_tag "$repo")"
+  latest_version="${latest_tag#v}"
+  if [[ ! "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "unexpected release tag for ${repo}: ${latest_tag}" >&2
+    return 1
+  fi
+  if [[ "$latest_version" == "$current_version" ]]; then
+    echo "${package} is current (${current_version})."
+    return 0
+  fi
+
+  latest_rev="$(tag_commit "https://github.com/${repo}.git" "$latest_tag")"
+  if [[ ! "$latest_rev" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "failed to resolve ${repo} tag ${latest_tag}" >&2
+    return 1
+  fi
+  source_json="$(prefetch_json true "https://github.com/${repo}/archive/${latest_rev}.tar.gz")"
+  source_hash="$(printf '%s\n' "$source_json" | json_field hash)"
+  if [[ -z "$source_hash" ]]; then
+    echo "failed to prefetch ${package} source" >&2
+    return 1
+  fi
+
+  backup="$(mktemp)"
+  cp "$file" "$backup"
+  replace_nix_string version "$latest_version" "$file"
+  replace_nix_string rev "$latest_rev" "$file"
+  replace_nix_string hash "$source_hash" "$file"
+  if ! discover_nix_fixed_hash "$package" "$file" npmDepsHash >/dev/null; then
+    cp "$backup" "$file"
+    rm -f "$backup"
+    return 1
+  fi
+  rm -f "$backup"
+  echo "Updated ${package} ${current_version} -> ${latest_version}"
 }
 
 latest_archon_linux_x64_asset() {
@@ -444,19 +663,118 @@ block_camofox() {
   fi
 }
 
-# Block: nix flake update. Captures stdout/stderr to a log file. The block is
-# treated as a real failure only if the lock file did not change at all
-# (neither codex nor hermes-agent fingerprint moved AND the codex ref bump
-# inside block_codex_ref did not change anything) AND the underlying command
-# exited non-zero. Tagged as "flake_update".
+# Block: DevSpace. This package has a release-pinned lockfile repair in its
+# derivation; refuse an upstream lockfile shape change instead of publishing a
+# candidate that cannot apply the existing postPatch.
+block_devspace() {
+  local current_version latest_tag latest_version latest_rev source_json source_hash source_path
+  local backup
+
+  current_version="$(nix_string_value version "$devspace_package_file")"
+  latest_tag="$(latest_release_tag Waishnav/devspace)"
+  latest_version="${latest_tag#v}"
+  if [[ ! "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "unexpected DevSpace release tag: ${latest_tag}" >&2
+    return 1
+  fi
+  if [[ "$latest_version" == "$current_version" ]]; then
+    echo "devspace is current (${current_version})."
+    return 0
+  fi
+
+  latest_rev="$(tag_commit https://github.com/Waishnav/devspace.git "$latest_tag")"
+  source_json="$(prefetch_json true "https://github.com/Waishnav/devspace/archive/${latest_rev}.tar.gz")"
+  source_hash="$(printf '%s\n' "$source_json" | json_field hash)"
+  source_path="$(printf '%s\n' "$source_json" | json_field storePath)"
+  if [[ ! "$latest_rev" =~ ^[0-9a-f]{40}$ || -z "$source_hash" || -z "$source_path" ]]; then
+    echo "failed to prefetch DevSpace release ${latest_tag}" >&2
+    return 1
+  fi
+  for anchor in \
+    '"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.80.3.tgz",' \
+    '"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.80.3.tgz",' \
+    '"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.80.3.tgz",'; do
+    if ! grep -Fq "$anchor" "$source_path/package-lock.json"; then
+      echo "DevSpace ${latest_tag} changed the lockfile anchors required by postPatch" >&2
+      return 1
+    fi
+  done
+
+  backup="$(mktemp)"
+  cp "$devspace_package_file" "$backup"
+  replace_nix_string version "$latest_version" "$devspace_package_file"
+  replace_nix_string rev "$latest_rev" "$devspace_package_file"
+  replace_nix_string hash "$source_hash" "$devspace_package_file"
+  if ! discover_nix_fixed_hash devspace "$devspace_package_file" npmDepsHash >/dev/null; then
+    cp "$backup" "$devspace_package_file"
+    rm -f "$backup"
+    return 1
+  fi
+  rm -f "$backup"
+  echo "Updated devspace ${current_version} -> ${latest_version}"
+}
+
+block_freellmapi() {
+  update_tagged_npm_package freellmapi "$freellmapi_package_file" tashfeenahmed/freellmapi
+}
+
+block_github_cli() {
+  update_tagged_go_package github-cli "$github_cli_package_file" cli/cli
+}
+
+block_notion_cli() {
+  update_tagged_go_package notion-cli "$notion_cli_package_file" 4ier/notion-cli
+}
+
+block_omp() {
+  local current_version latest_asset latest_tag latest_version asset_url asset_digest latest_hash
+
+  current_version="$(nix_string_value version "$omp_package_file")"
+  latest_asset="$(latest_release_asset can1357/oh-my-pi omp-linux-x64)"
+  latest_tag="$(printf '%s\n' "$latest_asset" | cut -f1)"
+  asset_url="$(printf '%s\n' "$latest_asset" | cut -f2)"
+  asset_digest="$(printf '%s\n' "$latest_asset" | cut -f3)"
+  latest_version="${latest_tag#v}"
+  if [[ ! "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "unexpected Oh My Pi release tag: ${latest_tag}" >&2
+    return 1
+  fi
+  if [[ "$latest_version" == "$current_version" ]]; then
+    echo "omp is current (${current_version})."
+    return 0
+  fi
+
+  if [[ -n "$asset_digest" ]]; then
+    latest_hash="$(nix_sri_from_github_sha256_digest "$asset_digest")" || {
+      echo "unsupported Oh My Pi asset digest: ${asset_digest}" >&2
+      return 1
+    }
+  else
+    latest_hash="$(prefetch_json false "$asset_url" | json_field hash)"
+  fi
+  if [[ -z "$latest_hash" ]]; then
+    echo "failed to resolve Oh My Pi asset hash" >&2
+    return 1
+  fi
+
+  replace_nix_string version "$latest_version" "$omp_package_file"
+  replace_nix_string hash "$latest_hash" "$omp_package_file"
+  echo "Updated omp ${current_version} -> ${latest_version}"
+}
+
+block_supabase_cli() {
+  update_tagged_go_package supabase-cli "$supabase_cli_package_file" supabase/cli
+}
+
+# Block: nix flake update. Captures stdout/stderr to a log file and requires a
+# zero exit status. run_block restores flake.lock if the command fails after a
+# partial write. Tagged as "flake_update".
 block_flake_update() {
-  local log codex_before_local hermes_before_local codex_after_local hermes_after_local rc
-  local codex_lock_changed=0
+  local log rc
   local -a flake_inputs
 
   log="$(mktemp)"
-  codex_before_local="$(lock_fingerprint "$before_lock" codex)"
-  hermes_before_local="$(lock_fingerprint "$before_lock" hermes-agent)"
+  rc=0
 
   case "$update_mode" in
     all)
@@ -470,7 +788,6 @@ block_flake_update() {
       ;;
   esac
 
-  rc=0
   # The Codex lane also updates `rust-overlay`, which is wired in via
   # codex.inputs.rust-overlay.overlays.default. Without this, a new Codex tag can
   # require a rustc release that the locked overlay does not know about. The
@@ -478,25 +795,8 @@ block_flake_update() {
   # already handled and published before that lane starts.
   nix flake update "${flake_inputs[@]}" >"$log" 2>&1 || rc=$?
 
-  codex_after_local="$(lock_fingerprint "$PWD/flake.lock" codex)"
-  hermes_after_local="$(lock_fingerprint "$PWD/flake.lock" hermes-agent)"
-  if [[ "$update_mode" == "codex-only" ]] && ! cmp -s "$before_lock" "$PWD/flake.lock"; then
-    codex_lock_changed=1
-  fi
-
-  # If anything actually changed (lock fingerprints OR the codex ref bump),
-  # treat the block as successful even if `nix flake update` printed warnings.
-  if [[ "$codex_before_local" != "$codex_after_local" \
-      || "$hermes_before_local" != "$hermes_after_local" \
-      || "$codex_lock_changed" == "1" \
-      || "${codex_ref_changed:-0}" == "1" ]]; then
-    rm -f "$log"
-    return 0
-  fi
-
-  # Nothing changed. Fall back to the real exit code.
   if [[ "$rc" -ne 0 ]]; then
-    echo "::warning::nix flake update ${flake_inputs[*]} produced no changes and exited ${rc}; log:" >&2
+    echo "::warning::nix flake update ${flake_inputs[*]} exited ${rc}; log:" >&2
     sed 's/^/  /' "$log" >&2 || true
     rm -f "$log"
     return "$rc"
@@ -599,17 +899,23 @@ block_symphony_ts() {
 
 case "$update_mode" in
   all)
-    run_block archon            block_archon
-    run_block codex_ref         block_codex_ref
-    run_block camofox           block_camofox
-    run_block symphony_ts       block_symphony_ts
-    run_block flake_update      block_flake_update
-    run_block codex_cargo_hashes block_codex_cargo_hashes
+    run_block archon            block_archon            "$archon_package_file"
+    run_block codex_ref         block_codex_ref         flake.nix
+    run_block camofox           block_camofox           "$camofox_package_file"
+    run_block symphony_ts       block_symphony_ts       "$symphony_ts_package_file"
+    run_block devspace          block_devspace          "$devspace_package_file"
+    run_block freellmapi        block_freellmapi        "$freellmapi_package_file"
+    run_block github_cli        block_github_cli        "$github_cli_package_file"
+    run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
+    run_block omp               block_omp               "$omp_package_file"
+    run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file"
+    run_block flake_update      block_flake_update      flake.lock
+    run_block codex_cargo_hashes block_codex_cargo_hashes flake.nix
     ;;
   codex-only)
-    run_block codex_ref         block_codex_ref
-    run_block flake_update      block_flake_update
-    run_block codex_cargo_hashes block_codex_cargo_hashes
+    run_block codex_ref         block_codex_ref         flake.nix
+    run_block flake_update      block_flake_update      flake.lock
+    run_block codex_cargo_hashes block_codex_cargo_hashes flake.nix
     for required_block in codex_ref flake_update codex_cargo_hashes; do
       if [[ "${block_status[$required_block]:-FAILED}" != "OK" ]]; then
         echo "required Codex update block failed: $required_block" >&2
@@ -618,10 +924,16 @@ case "$update_mode" in
     done
     ;;
   without-codex)
-    run_block archon            block_archon
-    run_block camofox           block_camofox
-    run_block symphony_ts       block_symphony_ts
-    run_block flake_update      block_flake_update
+    run_block archon            block_archon            "$archon_package_file"
+    run_block camofox           block_camofox           "$camofox_package_file"
+    run_block symphony_ts       block_symphony_ts       "$symphony_ts_package_file"
+    run_block devspace          block_devspace          "$devspace_package_file"
+    run_block freellmapi        block_freellmapi        "$freellmapi_package_file"
+    run_block github_cli        block_github_cli        "$github_cli_package_file"
+    run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
+    run_block omp               block_omp               "$omp_package_file"
+    run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file"
+    run_block flake_update      block_flake_update      flake.lock
     ;;
 esac
 
@@ -655,10 +967,28 @@ fi
 if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_symphony_ts_package" "$symphony_ts_package_file"; then
   add_changed_package symphony-ts
 fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_devspace_package" "$devspace_package_file"; then
+  add_changed_package devspace
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_freellmapi_package" "$freellmapi_package_file"; then
+  add_changed_package freellmapi
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_github_cli_package" "$github_cli_package_file"; then
+  add_changed_package github-cli
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_notion_cli_package" "$notion_cli_package_file"; then
+  add_changed_package notion-cli
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_omp_package" "$omp_package_file"; then
+  add_changed_package omp
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_supabase_cli_package" "$supabase_cli_package_file"; then
+  add_changed_package supabase-cli
+fi
 # Final summary: print OK/SKIPPED/FAILED for every block we ran.
 echo
 echo "::group::Update block summary"
-for name in archon codex_ref camofox symphony_ts flake_update codex_cargo_hashes; do
+for name in archon codex_ref camofox symphony_ts devspace freellmapi github_cli notion_cli omp supabase_cli flake_update codex_cargo_hashes; do
   printf '  %-16s %s\n' "$name" "${block_status[$name]:-SKIPPED}"
 done
 echo "::endgroup::"

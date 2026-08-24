@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -37,6 +38,7 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text()
         cls.updater = UPDATER.read_text()
+        cls.detector = PACKAGE_DETECTOR.read_text()
 
     def test_verified_codex_commit_precedes_unrelated_updates(self) -> None:
         codex_update = workflow_step(self.workflow, "Update Codex input")
@@ -157,6 +159,101 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         self.assertIn("block_camofox", remaining_block)
         self.assertNotIn("run_block codex_ref", remaining_block)
 
+    def test_remaining_lane_covers_external_packages_only(self) -> None:
+        expected_blocks = (
+            "devspace",
+            "freellmapi",
+            "github_cli",
+            "notion_cli",
+            "omp",
+            "supabase_cli",
+        )
+        for block in expected_blocks:
+            with self.subTest(block=block):
+                self.assertIn(f"block_{block}()", self.updater)
+                self.assertIn(f"run_block {block}", self.updater)
+
+        for excluded in ("render-cli", "vexora", "camoufox-agent"):
+            with self.subTest(excluded=excluded):
+                self.assertNotIn(excluded, self.updater)
+        self.assertNotIn('add_package "camoufox-agent"', self.detector.split(
+            ".github/workflows/update-upstreams.yml | scripts/update-upstream-inputs)"
+        )[1].split("scripts/update-codex-cargo-hashes)")[0])
+
+    def test_update_blocks_declare_their_transaction_files(self) -> None:
+        expected = {
+            "camofox": ("block_camofox", "$camofox_package_file"),
+            "symphony_ts": ("block_symphony_ts", "$symphony_ts_package_file"),
+            "devspace": ("block_devspace", "$devspace_package_file"),
+            "freellmapi": ("block_freellmapi", "$freellmapi_package_file"),
+            "github_cli": ("block_github_cli", "$github_cli_package_file"),
+            "notion_cli": ("block_notion_cli", "$notion_cli_package_file"),
+            "omp": ("block_omp", "$omp_package_file"),
+            "supabase_cli": ("block_supabase_cli", "$supabase_cli_package_file"),
+            "flake_update": ("block_flake_update", "flake.lock"),
+        }
+        for name, (function, path) in expected.items():
+            with self.subTest(name=name):
+                self.assertRegex(
+                    self.updater,
+                    rf"run_block\s+{name}\s+{function}\s+\"?{re.escape(path)}\"?",
+                )
+
+    def test_failed_block_transactions_restore_files_and_no_changed_package(self) -> None:
+        start = self.updater.index("run_block() {")
+        end = self.updater.index("\n}\n\nlock_fingerprint", start) + 2
+        run_block = self.updater[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            changed = root / ".changed-packages"
+            script = f"""
+set -euo pipefail
+declare -A block_status=()
+{run_block}
+fail_block() {{ printf 'mutated\\n' > "$FAIL_TARGET"; return 1; }}
+for name in camofox omp flake_update; do
+  target={shlex.quote(str(root))}/$name
+  printf 'before-%s\\n' "$name" > "$target"
+  FAIL_TARGET="$target" run_block "$name" fail_block "$target" >/dev/null 2>&1
+  test "$(cat "$target")" = "before-$name"
+done
+test ! -e {shlex.quote(str(changed))}
+"""
+            result = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_updater_script_changes_select_every_managed_package(self) -> None:
+        managed = (
+            "archon",
+            "camofox-browser",
+            "codex",
+            "devspace",
+            "freellmapi",
+            "github-cli",
+            "hermes-agent",
+            "notion-cli",
+            "omp",
+            "supabase-cli",
+            "symphony-ts",
+        )
+        for package in managed:
+            with self.subTest(package=package):
+                self.assertIn(f'add_package "{package}"', self.detector)
+
+    def test_codex_and_hermes_current_upgrade_contracts(self) -> None:
+        flake = (ROOT / "flake.nix").read_text()
+        self.assertIn('github:openai/codex/rust-v0.149.1', flake)
+        self.assertNotIn("registration_lifecycle", flake)
+        self.assertIn('#![recursion_limit = "256"]', flake)
+        lock = json.loads((ROOT / "flake.lock").read_text())
+        self.assertEqual(lock["nodes"]["codex"]["original"]["ref"], "rust-v0.149.1")
+        self.assertEqual(lock["nodes"]["hermes-agent"]["locked"]["rev"], "057dcdf236f8a6a26721c10fcc6ccb72726e272a")
+
     def test_current_codex_source_and_lock_identities_match(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
         ref_marker = 'url = "github:openai/codex/'
@@ -216,6 +313,27 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
 
 
 class CodexPackageContractTests(unittest.TestCase):
+    def test_codex_post_patch_inserts_exec_recursion_limit_idempotently(self) -> None:
+        flake_source = (ROOT / "flake.nix").read_text()
+        patch_start = flake_source.index("postPatch = (oldAttrs.postPatch or \"\") +")
+        patch_end = flake_source.index("'';", patch_start)
+        post_patch = flake_source[patch_start:patch_end]
+
+        self.assertIn("codex-rs/exec/src/lib.rs", flake_source)
+        self.assertIn('target="exec/src/lib.rs"', post_patch)
+        self.assertIn(
+            "if ! grep -Fqx '#![recursion_limit = \"256\"]' \"$target\"; then",
+            post_patch,
+        )
+        self.assertIn(
+            "sed -i '1i#![recursion_limit = \"256\"]' \"$target\"",
+            post_patch,
+        )
+        self.assertIn(
+            "grep -Fqx '#![recursion_limit = \"256\"]' \"$target\"",
+            post_patch,
+        )
+
     def test_codex_builds_and_requires_runtime_executables(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
         flags_start = flake_source.index("    codexBuildFlags = [")
@@ -294,6 +412,38 @@ class CodexPackageContractTests(unittest.TestCase):
         self.assertEqual(hooks["noTrailingNewline"], "old-command\n" + appended_hook)
 
 
+class ExternalPackageContractTests(unittest.TestCase):
+    def test_freellmapi_keeps_server_client_scope(self) -> None:
+        source = (ROOT / "pkgs" / "freellmapi" / "default.nix").read_text()
+        self.assertIn("npm run build:server", source)
+        self.assertIn("npm run build -w client", source)
+        self.assertNotIn("\nnpm run build -w cli\n", source)
+        self.assertIn("server/dist server/package.json", source)
+        self.assertIn("client/dist client/package.json", source)
+
+    def test_supabase_uses_nested_go_module(self) -> None:
+        source = (ROOT / "pkgs" / "supabase-cli" / "default.nix").read_text()
+        self.assertIn('sourceRoot = "source/apps/cli-go";', source)
+        self.assertIn('subPackages = [ "." ];', source)
+        self.assertIn("github.com/supabase/cli/internal/utils.Version", source)
+
+    def test_automated_package_paths_are_allowed_in_remaining_artifacts(self) -> None:
+        artifact = (ROOT / "scripts" / "update-artifact").read_text()
+        for package in (
+            "devspace",
+            "freellmapi",
+            "github-cli",
+            "notion-cli",
+            "omp",
+            "supabase-cli",
+        ):
+            with self.subTest(package=package):
+                self.assertIn(f'"{package}"', artifact)
+                self.assertIn(f'"pkgs/{package}/default.nix"', artifact)
+        for excluded in ("render-cli", "vexora", "camoufox-agent"):
+            self.assertNotIn(excluded, artifact)
+
+
 class CodexCargoHashUpdaterTests(unittest.TestCase):
     OLD_HASH = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     NEW_HASH = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
@@ -319,6 +469,8 @@ import sys
 
 if os.environ.get("FAIL_PREFETCH") == "1":
     raise SystemExit(1)
+if "--fetch-submodules" not in sys.argv:
+    raise SystemExit(3)
 rev = sys.argv[sys.argv.index("--rev") + 1]
 url = sys.argv[sys.argv.index("--url") + 1]
 hashes = {{

@@ -208,7 +208,14 @@ classify_file() {
       add_package "archon"
       add_package "camofox-browser"
       add_package "codex"
+      add_package "devspace"
+      add_package "freellmapi"
+      add_package "github-cli"
       add_package "hermes-agent"
+      add_package "notion-cli"
+      add_package "omp"
+      add_package "supabase-cli"
+      add_package "symphony-ts"
       ;;
     scripts/update-codex-cargo-hashes)
       run_checks="true"
