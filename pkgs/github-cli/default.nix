@@ -7,16 +7,16 @@
 
 buildGo125Module rec {
   pname = "github-cli";
-  version = "2.86.0";
+  version = "2.98.0";
 
   src = fetchFromGitHub {
     owner = "cli";
     repo = "cli";
     rev = "v${version}";
-    hash = "sha256-+MPhDgXIVfYGp5ALI5GjRoeLRRUtNgpzUawxoqR76iE=";
+    hash = "sha256-2MktrI8FEvGkU2/cC6vrPtujl8fszuxz+Ey30WjRjhg=";
   };
 
-  vendorHash = "sha256-pBHEqMgEoR3sWNbQjGBNso7WLP9Rz2gu89Bzu+7jz5c=";
+  vendorHash = "sha256-fhFsu/LjLNFwexSfUsd4X74UD+AQojLcdxU5IqOi3GY=";
 
   subPackages = [ "cmd/gh" ];
 

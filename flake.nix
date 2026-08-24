@@ -13,7 +13,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     codex = {
-      url = "github:openai/codex/rust-v0.148.0";
+      url = "github:openai/codex/rust-v0.149.1";
       # Route codex's transitive rust-overlay input through our own (declared below) so a
       # single `nix flake update rust-overlay` refreshes both. Otherwise codex stays pinned
       # to whatever rust-overlay rev its upstream flake.lock happened to record, and the
@@ -72,22 +72,6 @@
               chmod -R u+w "$moduleDir"
             }
 
-            # v2026.8.13 imports this top-level module but omits it from the
-            # wheel's py-modules list. Keep the release usable in the sealed
-            # venv while making an upstream packaging fix fail loudly here.
-            pluginsSource=${hermes-agent}/hermes_cli/plugins.py
-            if grep -Fqx \
-              "from registration_lifecycle import replacement_coordinator" \
-              "$pluginsSource"; then
-              if [ -e "$sitePackages/registration_lifecycle.py" ]; then
-                echo "Hermes now packages registration_lifecycle; remove the compatibility copy." >&2
-                exit 1
-              fi
-              test -f ${hermes-agent}/registration_lifecycle.py
-              install -m 0444 ${hermes-agent}/registration_lifecycle.py \
-                "$sitePackages/registration_lifecycle.py"
-            fi
-
             # Telegram API allows 100 commands; lower menu limits hide plugin commands like /note.
             if [ -e "$sitePackages/gateway/platforms/telegram.py" ]; then
               copyPythonModule gateway
@@ -118,6 +102,7 @@
     codexCargoOutputHashes = lib: {
       "crossterm-0.29.0" = "sha256-cQxQQuV+YEutuQiPurXVISq6F/99vCEk8qe5PU8BCSo=";
       "nucleo-0.5.0" = "sha256-Hm4SxtTSBrcWpXrtSqeO0TACbUxq3gizg1zD/6Yw/sI=";
+      "nucleo-matcher-0.3.1" = "sha256-Hm4SxtTSBrcWpXrtSqeO0TACbUxq3gizg1zD/6Yw/sI=";
       "runfiles-0.1.0" = "sha256-uJpVLcQh8wWZA3GPv9D8Nt43EOirajfDJ7eq/FB+tek=";
       "tokio-tungstenite-0.28.0" = "sha256-V1xmnrfRWOcZZogelZEA4vvyMj2awCfHVA5/glQ6KAI=";
       "tungstenite-0.27.0" = "sha256-VVHhk7l9J/sEmG3q/UuV/sQ3f+fGsmq5vumSy8vbMvw=";
@@ -172,6 +157,19 @@
           lockFile = "${codex}/codex-rs/Cargo.lock";
           outputHashes = codexCargoOutputHashes pkgs.lib;
         };
+        # Keep the package fail-closed if a future pin drops the upstream MCP
+        # attributes, and carry the recursion-limit fix into exec. The source
+        # root is codex-rs, so this is codex-rs/exec/src/lib.rs.
+        postPatch = (oldAttrs.postPatch or "") + ''
+          grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/lib.rs
+          grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/main.rs
+
+          target="exec/src/lib.rs"
+          if ! grep -Fqx '#![recursion_limit = "256"]' "$target"; then
+            sed -i '1i#![recursion_limit = "256"]' "$target"
+          fi
+          grep -Fqx '#![recursion_limit = "256"]' "$target"
+        '';
         postInstall = codexPostInstall (oldAttrs.postInstall or "");
       });
   in

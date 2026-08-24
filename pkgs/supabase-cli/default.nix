@@ -7,16 +7,18 @@
 
 buildGo125Module rec {
   pname = "supabase-cli";
-  version = "2.98.2";
+  version = "2.115.0";
 
   src = fetchFromGitHub {
     owner = "supabase";
     repo = "cli";
     rev = "v${version}";
-    hash = "sha256-ZiptplUqebmId7noXuVXu9G5y1SW8+FGV6WqPH8R3Cw=";
+    hash = "sha256-329kcFUMqpm+Jd5xd46QkXnCSIocabPMAWE4r7PhLEY=";
   };
 
-  vendorHash = "sha256-2BIP500MgABRzsG13UaUVv8KKtA0dPM0U10Uk/rfVQY=";
+  sourceRoot = "source/apps/cli-go";
+
+  vendorHash = "sha256-f6NecP9N12P1w/zKjdrLd5HiVHa9xXQwq7ATocEZdlc=";
 
   subPackages = [ "." ];
 
