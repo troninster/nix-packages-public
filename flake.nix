@@ -156,6 +156,18 @@
         test -x "$out/bin/codex"
         test -x "$out/bin/codex-code-mode-host"
       '';
+    codexRecursionLimitPatch = ''
+      add_recursion_limit() {
+        local target="$1"
+        if ! grep -Fqx '#![recursion_limit = "256"]' "$target"; then
+          sed -i '1i#![recursion_limit = "256"]' "$target"
+        fi
+        grep -Fqx '#![recursion_limit = "256"]' "$target"
+      }
+
+      add_recursion_limit exec/src/lib.rs
+      add_recursion_limit cli/src/main.rs
+    '';
     codexPackageFor = pkgs: system:
       codex.packages.${system}.default.overrideAttrs (oldAttrs: {
         env = (oldAttrs.env or {}) // (codexBuildEnv pkgs);
@@ -165,17 +177,12 @@
           outputHashes = codexCargoOutputHashes pkgs.lib;
         };
         # Keep the package fail-closed if a future pin drops the upstream MCP
-        # attributes, and carry the recursion-limit fix into exec. The source
-        # root is codex-rs, so this is codex-rs/exec/src/lib.rs.
+        # attributes, and carry the recursion-limit fix into exec and cli. The
+        # source root is codex-rs.
         postPatch = (oldAttrs.postPatch or "") + ''
           grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/lib.rs
           grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/main.rs
-
-          target="exec/src/lib.rs"
-          if ! grep -Fqx '#![recursion_limit = "256"]' "$target"; then
-            sed -i '1i#![recursion_limit = "256"]' "$target"
-          fi
-          grep -Fqx '#![recursion_limit = "256"]' "$target"
+          ${codexRecursionLimitPatch}
         '';
         postInstall = codexPostInstall (oldAttrs.postInstall or "");
       });
