@@ -19,8 +19,14 @@ PHASE_PACKAGES = {
     "remaining": {
         "archon",
         "camofox-browser",
+        "devspace",
+        "freellmapi",
+        "github-cli",
         "hermes-agent",
+        "notion-cli",
+        "omp",
         "symphony-ts",
+        "supabase-cli",
     },
 }
 PHASE_PATHS = {
@@ -29,7 +35,13 @@ PHASE_PATHS = {
         "flake.lock",
         "pkgs/archon/default.nix",
         "pkgs/camofox-browser/default.nix",
+        "pkgs/devspace/default.nix",
+        "pkgs/freellmapi/default.nix",
+        "pkgs/github-cli/default.nix",
+        "pkgs/notion-cli/default.nix",
+        "pkgs/omp/default.nix",
         "pkgs/symphony-ts/default.nix",
+        "pkgs/supabase-cli/default.nix",
     ),
 }
 
@@ -103,8 +115,20 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
             packages.add("archon")
         elif path == "pkgs/camofox-browser/default.nix":
             packages.add("camofox-browser")
+        elif path == "pkgs/devspace/default.nix":
+            packages.add("devspace")
+        elif path == "pkgs/freellmapi/default.nix":
+            packages.add("freellmapi")
+        elif path == "pkgs/github-cli/default.nix":
+            packages.add("github-cli")
+        elif path == "pkgs/notion-cli/default.nix":
+            packages.add("notion-cli")
+        elif path == "pkgs/omp/default.nix":
+            packages.add("omp")
         elif path == "pkgs/symphony-ts/default.nix":
             packages.add("symphony-ts")
+        elif path == "pkgs/supabase-cli/default.nix":
+            packages.add("supabase-cli")
     return sorted(packages)
 
 
