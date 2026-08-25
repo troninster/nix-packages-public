@@ -413,6 +413,18 @@ class CodexPackageContractTests(unittest.TestCase):
 
 
 class ExternalPackageContractTests(unittest.TestCase):
+    def test_go_packages_use_pinned_go126_builder(self) -> None:
+        flake = (ROOT / "flake.nix").read_text()
+        self.assertIn(
+            "codex.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module",
+            flake,
+        )
+        for package in ("github-cli", "supabase-cli"):
+            with self.subTest(package=package):
+                source = (ROOT / "pkgs" / package / "default.nix").read_text()
+                self.assertIn("buildGo126Module", source)
+                self.assertNotIn("buildGo125Module", source)
+
     def test_freellmapi_keeps_server_client_scope(self) -> None:
         source = (ROOT / "pkgs" / "freellmapi" / "default.nix").read_text()
         self.assertIn("npm run build:server", source)
@@ -420,6 +432,12 @@ class ExternalPackageContractTests(unittest.TestCase):
         self.assertNotIn("\nnpm run build -w cli\n", source)
         self.assertIn("server/dist server/package.json", source)
         self.assertIn("client/dist client/package.json", source)
+        self.assertIn(
+            "rm -f $out/lib/freellmapi/node_modules/freellmapi", source
+        )
+        self.assertIn(
+            "test ! -e $out/lib/freellmapi/node_modules/freellmapi", source
+        )
 
     def test_supabase_uses_nested_go_module(self) -> None:
         source = (ROOT / "pkgs" / "supabase-cli" / "default.nix").read_text()

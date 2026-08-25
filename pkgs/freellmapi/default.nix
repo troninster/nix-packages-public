@@ -42,6 +42,10 @@ buildNpmPackage rec {
 
     mkdir -p $out/lib/freellmapi/server $out/lib/freellmapi/client
     cp -r node_modules $out/lib/freellmapi/node_modules
+    # npm creates this workspace link for the omitted cli package; remove only
+    # that broken self-link after copying the server/client dependencies.
+    rm -f $out/lib/freellmapi/node_modules/freellmapi
+    test ! -e $out/lib/freellmapi/node_modules/freellmapi
     cp -r server/dist server/package.json $out/lib/freellmapi/server/
     cp -r client/dist client/package.json $out/lib/freellmapi/client/
     cp -r shared $out/lib/freellmapi/shared

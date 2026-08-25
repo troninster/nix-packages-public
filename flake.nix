@@ -55,7 +55,14 @@
     pkgsFor = system: import nixpkgs {
       inherit system;
       config.allowUnfree = true;
-      overlays = [ codex.inputs.rust-overlay.overlays.default ];
+      overlays = [
+        codex.inputs.rust-overlay.overlays.default
+        (final: prev: {
+          # The pinned Codex nixpkgs input is the exact source for the Go 1.26
+          # builder while the root nixpkgs input still exposes Go 1.25 only.
+          buildGo126Module = codex.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module;
+        })
+      ];
     };
     patchHermesTelegramMenuCap = pkgs: package:
       let
