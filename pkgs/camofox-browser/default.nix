@@ -5,6 +5,7 @@
   fetchFromGitHub,
   fetchurl,
   nodejs,
+  python3,
   makeWrapper,
   autoPatchelfHook,
   unzip,
@@ -80,6 +81,9 @@ buildNpmPackage rec {
   };
 
   npmDepsHash = camofoxBrowserNpmDepsHash;
+  postPatch = ''
+    ${python3}/bin/python ${../../scripts/repair-camofox-package-lock.py} package-lock.json package.json
+  '';
   # npmConfigHook installs with --ignore-scripts, then runs npm rebuild. The
   # impit package's rebuild only invokes a package-manager guard via npx, which
   # is unavailable in Nix's offline npm cache. Rebuild only the native module the
@@ -88,6 +92,7 @@ buildNpmPackage rec {
 
   nativeBuildInputs = [
     makeWrapper
+    python3
     autoPatchelfHook
     unzip
   ];

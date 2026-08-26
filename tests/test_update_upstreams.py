@@ -14,6 +14,7 @@ UPDATER = ROOT / "scripts" / "update-upstream-inputs"
 ARTIFACT_TOOL = ROOT / "scripts" / "update-artifact"
 PACKAGE_DETECTOR = ROOT / "scripts" / "detect-ci-packages"
 CODEX_HASH_UPDATER = ROOT / "scripts" / "update-codex-cargo-hashes"
+CAMOFOX_LOCK_REPAIR = ROOT / "scripts" / "repair-camofox-package-lock.py"
 
 
 def workflow_step(source: str, name: str) -> str:
@@ -315,12 +316,10 @@ test ! -e {shlex.quote(str(changed))}
 class CodexPackageContractTests(unittest.TestCase):
     def test_codex_post_patch_inserts_exec_recursion_limit_idempotently(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
-        patch_start = flake_source.index("postPatch = (oldAttrs.postPatch or \"\") +")
+        patch_start = flake_source.index("codexRecursionLimitPatch = ''")
         patch_end = flake_source.index("'';", patch_start)
         post_patch = flake_source[patch_start:patch_end]
 
-        self.assertIn("codex-rs/exec/src/lib.rs", flake_source)
-        self.assertIn('target="exec/src/lib.rs"', post_patch)
         self.assertIn(
             "if ! grep -Fqx '#![recursion_limit = \"256\"]' \"$target\"; then",
             post_patch,
@@ -332,6 +331,19 @@ class CodexPackageContractTests(unittest.TestCase):
         self.assertIn(
             "grep -Fqx '#![recursion_limit = \"256\"]' \"$target\"",
             post_patch,
+        )
+
+    def test_codex_post_patch_targets_exec_and_cli_with_shared_helper(self) -> None:
+        flake_source = (ROOT / "flake.nix").read_text()
+        patch_start = flake_source.index("codexRecursionLimitPatch = ''")
+        patch_end = flake_source.index("'';", patch_start)
+        helper = flake_source[patch_start:patch_end]
+        self.assertIn("add_recursion_limit()", helper)
+        self.assertIn("add_recursion_limit exec/src/lib.rs", helper)
+        self.assertIn("add_recursion_limit cli/src/main.rs", helper)
+        self.assertEqual(
+            helper.count("grep -Fqx '#![recursion_limit = \"256\"]' \"$target\""),
+            2,
         )
 
     def test_codex_builds_and_requires_runtime_executables(self) -> None:
@@ -413,6 +425,113 @@ class CodexPackageContractTests(unittest.TestCase):
 
 
 class ExternalPackageContractTests(unittest.TestCase):
+    def test_camofox_repair_runs_before_npm_prefetch(self) -> None:
+        source = (ROOT / "scripts" / "update-upstream-inputs").read_text()
+        repair = source.index("repair-camofox-package-lock.py")
+        prefetch = source.index("prefetch-npm-deps", repair)
+        self.assertLess(repair, prefetch)
+        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
+        self.assertIn("repair-camofox-package-lock.py", package)
+
+    def test_camofox_lock_repair_handles_114_fixture_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = root / "package-lock.json"
+            package = root / "package.json"
+            top_level = {
+                "version": "13.0.6",
+                "resolved": "https://registry.npmjs.org/glob/-/glob-13.0.6.tgz",
+                "integrity": "sha512-top-level",
+            }
+            package.write_text(json.dumps({
+                "name": "@askjo/camofox-browser",
+                "version": "1.14.0",
+                "overrides": {
+                    "@jest/reporters": {"glob": "13.0.6"},
+                    "jest-config": {"glob": "13.0.6"},
+                    "jest-runtime": {"glob": "13.0.6"},
+                    "swagger-jsdoc": {"glob": "13.0.6"},
+                },
+            }))
+            stale = {"version": "11.1.0", "resolved": "old", "integrity": "old"}
+            jest_stale = {**stale, "dev": True}
+            lock.write_text(json.dumps({
+                "name": "@askjo/camofox-browser",
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {},
+                    "node_modules/glob": top_level,
+                    "node_modules/@jest/reporters/node_modules/glob": jest_stale,
+                    "node_modules/jest-config/node_modules/glob": jest_stale,
+                    "node_modules/jest-runtime/node_modules/glob": jest_stale,
+                    "node_modules/swagger-jsdoc/node_modules/glob": stale,
+                },
+            }))
+            first = subprocess.run(
+                ["python3", str(CAMOFOX_LOCK_REPAIR), str(lock), str(package)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            repaired = lock.read_bytes()
+            data = json.loads(repaired)
+            for path in (
+                "node_modules/@jest/reporters/node_modules/glob",
+                "node_modules/jest-config/node_modules/glob",
+                "node_modules/jest-runtime/node_modules/glob",
+                "node_modules/swagger-jsdoc/node_modules/glob",
+            ):
+                self.assertEqual(data["packages"][path]["version"], top_level["version"])
+            for path in (
+                "node_modules/@jest/reporters/node_modules/glob",
+                "node_modules/jest-config/node_modules/glob",
+                "node_modules/jest-runtime/node_modules/glob",
+            ):
+                self.assertTrue(data["packages"][path]["dev"])
+            self.assertNotIn(
+                "dev", data["packages"]["node_modules/swagger-jsdoc/node_modules/glob"]
+            )
+            second = subprocess.run(
+                ["python3", str(CAMOFOX_LOCK_REPAIR), str(lock), str(package)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(lock.read_bytes(), repaired)
+
+    def test_camofox_lock_repair_rejects_unexpected_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "package.json"
+            lock = root / "package-lock.json"
+            package.write_text(json.dumps({
+                "overrides": {
+                    "@jest/reporters": {"glob": "13.0.6"},
+                    "jest-config": {"glob": "13.0.6"},
+                    "jest-runtime": {"glob": "13.0.6"},
+                    "swagger-jsdoc": {"glob": "13.0.6"},
+                },
+            }))
+            lock.write_text(json.dumps({
+                "lockfileVersion": 3,
+                "packages": {
+                    "node_modules/glob": {"version": "13.0.6"},
+                    "node_modules/unexpected/node_modules/glob": {
+                        "version": "11.1.0",
+                    },
+                },
+            }))
+            result = subprocess.run(
+                ["python3", str(CAMOFOX_LOCK_REPAIR), str(lock), str(package)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unexpected Camofox glob paths", result.stderr)
+
     def test_go_packages_use_pinned_go126_builder(self) -> None:
         flake = (ROOT / "flake.nix").read_text()
         self.assertIn(

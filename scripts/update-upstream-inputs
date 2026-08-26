@@ -596,7 +596,7 @@ block_codex_ref() {
 block_camofox() {
   local current_camofox_rev current_camoufox_engine_release_tag current_camoufox_engine_version
   local latest_camofox_rev latest_camoufox_engine_asset latest_camoufox_engine_release_tag
-  local latest_camoufox_engine_version camoufox_engine_url
+  local latest_camoufox_engine_version camoufox_engine_url camofox_candidate_path
 
   current_camofox_rev="$(nix_string_value camofoxBrowserRev "$camofox_package_file")"
   current_camoufox_engine_release_tag="$(nix_string_value camoufoxEngineReleaseTag "$camofox_package_file")"
@@ -624,8 +624,21 @@ block_camofox() {
       return 1
     fi
     camofox_browser_version="$(json_file_field "$camofox_src_path/package.json" version)"
-
-    camofox_npm_deps_hash="$(nix run nixpkgs#prefetch-npm-deps -- "$camofox_src_path/package-lock.json" | tail -n 1)"
+    camofox_candidate_path="$(mktemp -d)"
+    cp -R "$camofox_src_path"/. "$camofox_candidate_path"/
+    if ! python3 scripts/repair-camofox-package-lock.py \
+      "$camofox_candidate_path/package-lock.json" \
+      "$camofox_candidate_path/package.json"; then
+      rm -rf "$camofox_candidate_path"
+      echo "failed to repair Camofox package-lock.json" >&2
+      return 1
+    fi
+    if ! camofox_npm_deps_hash="$(nix run nixpkgs#prefetch-npm-deps -- "$camofox_candidate_path/package-lock.json" | tail -n 1)"; then
+      rm -rf "$camofox_candidate_path"
+      echo "failed to prefetch Camofox npm dependencies" >&2
+      return 1
+    fi
+    rm -rf "$camofox_candidate_path"
     if [[ -z "$camofox_npm_deps_hash" ]]; then
       echo "failed to prefetch Camofox npm dependencies" >&2
       return 1
