@@ -13,7 +13,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     codex = {
-      url = "github:openai/codex/rust-v0.151.0";
+      url = "github:openai/codex/rust-v0.152.0";
       # Route codex's transitive rust-overlay input through our own (declared below) so a
       # single `nix flake update rust-overlay` refreshes both. Otherwise codex stays pinned
       # to whatever rust-overlay rev its upstream flake.lock happened to record, and the
