@@ -66,7 +66,8 @@ declare -A block_status=()
 
 # run_block <name> <function> <touched-file...>
 #   Runs the supplied block while snapshotting its declared files. A failed
-#   block is rolled back and logged, but does not abort the remaining updates.
+#   block is rolled back and logged; the other checks still run so the final
+#   summary reports every failure before the updater exits non-zero.
 run_block() {
   local name="$1"
   shift
@@ -1016,6 +1017,19 @@ else
   echo "  (none)"
 fi
 echo "::endgroup::"
+
+if [[ "$update_mode" != "codex-only" ]]; then
+  failed_blocks=()
+  for name in archon camofox symphony_ts devspace freellmapi github_cli notion_cli omp supabase_cli flake_update; do
+    if [[ "${block_status[$name]:-SKIPPED}" == "FAILED" ]]; then
+      failed_blocks+=("$name")
+    fi
+  done
+  if ((${#failed_blocks[@]} > 0)); then
+    printf 'required upstream update blocks failed: %s\n' "$(IFS=,; echo "${failed_blocks[*]}")" >&2
+    exit 1
+  fi
+fi
 
 if ((${#changed[@]} > 0)); then
   printf '%s\n' "${changed[@]}" > "$changed_packages_file"

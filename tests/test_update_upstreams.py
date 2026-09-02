@@ -99,6 +99,10 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
             self.assertIn("secrets.CACHIX_AUTH_TOKEN", step)
             self.assertIn("REQUIRE_CACHIX_PUSH: 1", step)
 
+    def test_remaining_updater_authenticates_github_api_requests(self) -> None:
+        step = workflow_step(self.workflow, "Update remaining upstream inputs")
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", step)
+
     def test_codex_prepare_failure_does_not_starve_remaining_updates(self) -> None:
         remaining_job = workflow_job(self.workflow, "prepare-remaining")
         self.assertIn("needs.prepare-codex.result == 'failure'", remaining_job)
@@ -227,6 +231,29 @@ test ! -e {shlex.quote(str(changed))}
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_failed_remaining_blocks_make_the_updater_fail_loud(self) -> None:
+        guard_start = self.updater.index(
+            'if [[ "$update_mode" != "codex-only" ]]',
+            self.updater.index('echo "::endgroup::"', self.updater.index("# Final summary")),
+        )
+        guard_end = self.updater.index(
+            "\n\nif ((${#changed[@]} > 0))", guard_start
+        )
+        guard = self.updater[guard_start:guard_end]
+        result = subprocess.run(
+            ["bash", "-c", f"""
+set -euo pipefail
+update_mode=without-codex
+declare -A block_status=([github_cli]=FAILED [camofox]=OK)
+{guard}
+"""],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("required upstream update blocks failed: github_cli", result.stderr)
 
     def test_updater_script_changes_select_every_managed_package(self) -> None:
         managed = (
@@ -456,6 +483,21 @@ class ExternalPackageContractTests(unittest.TestCase):
         self.assertLess(repair, prefetch)
         package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
         self.assertIn("repair-camofox-package-lock.py", package)
+
+    def test_camofox_install_dir_patch_accepts_known_upstream_layouts(self) -> None:
+        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
+        self.assertIn(
+            "export const INSTALL_DIR = process.env.CAMOUFOX_INSTALL_DIR",
+            package,
+        )
+        self.assertIn(
+            'export const INSTALL_DIR = userCacheDir("camoufox");',
+            package,
+        )
+        self.assertIn(
+            "camofox-browser: unsupported camoufox-js INSTALL_DIR layout",
+            package,
+        )
 
     def test_camofox_lock_repair_handles_114_fixture_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
