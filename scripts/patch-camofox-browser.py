@@ -337,6 +337,20 @@ def preflight(sources: dict[str, str]) -> tuple[list[tuple[Transform, Variant]],
             errors.append(f"{transform.label} ({summary})")
             continue
         plan.append((transform, matches[0]))
+
+    selected = {transform.label: variant.name for transform, variant in plan}
+    health_labels = ("health-state", "browser-launch", "active-health-probe")
+    if all(label in selected for label in health_labels):
+        health_profile = tuple(selected[label] for label in health_labels)
+        coherent_profiles = {
+            ("legacy", "legacy", "legacy"),
+            ("native-1.14", "native-1.14", "native-1.14"),
+        }
+        if health_profile not in coherent_profiles:
+            summary = ", ".join(
+                f"{label}={selected[label]}" for label in health_labels
+            )
+            errors.append(f"health-profile coherence ({summary})")
     return plan, errors
 
 

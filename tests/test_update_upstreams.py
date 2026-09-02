@@ -630,6 +630,49 @@ class ExternalPackageContractTests(unittest.TestCase):
             self.assertEqual(pkgman.read_bytes(), before_pkgman)
             self.assertEqual(server.read_bytes(), before_server)
 
+    def test_camofox_compat_preflight_rejects_mixed_health_profile(self) -> None:
+        namespace = runpy.run_path(str(CAMOFOX_COMPAT_PATCH))
+        transforms = namespace["TRANSFORMS"]
+        sources: dict[str, list[str]] = {"pkgman": [], "server": []}
+        for transform in transforms:
+            variants = {variant.name: variant for variant in transform.variants}
+            if transform.label == "browser-launch":
+                name = "legacy"
+            else:
+                name = (
+                    "native-1.14"
+                    if "native-1.14" in variants
+                    else "native"
+                    if "native" in variants
+                    else "shared"
+                )
+            sources[transform.target].append(variants[name].before)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pkgman = root / "pkgman.js"
+            server = root / "server.js"
+            pkgman.write_text("\n\n".join(sources["pkgman"]))
+            server.write_text("\n\n".join(sources["server"]))
+            before_pkgman = pkgman.read_bytes()
+            before_server = server.read_bytes()
+
+            result = subprocess.run(
+                ["python3", str(CAMOFOX_COMPAT_PATCH), str(pkgman), str(server)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "health-profile coherence (health-state=native-1.14, "
+                "browser-launch=legacy, active-health-probe=native-1.14)",
+                result.stderr,
+            )
+            self.assertEqual(pkgman.read_bytes(), before_pkgman)
+            self.assertEqual(server.read_bytes(), before_server)
+
     def test_camofox_package_pins_verified_114_candidate(self) -> None:
         package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
         for pin in (
