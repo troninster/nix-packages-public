@@ -408,7 +408,7 @@ jobs:
   publish-remaining:
     name: Publish remaining upstream updates
     needs: prepare-remaining
-    if: ${{ needs.prepare-remaining.outputs.changed == 'true' }}
+    if: ${{ always() && needs.prepare-remaining.result == 'success' && needs.prepare-remaining.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
