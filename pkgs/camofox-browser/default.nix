@@ -236,16 +236,16 @@ buildNpmPackage rec {
     # if the reaper ticks during that window it closes the context under the
     # request and /tabs returns "Target page, context or browser has been
     # closed". Give fresh empty sessions a short grace period.
-    nativeSessionGraceAnchor='if (session.tabGroups.size === 0 && !hasActivePageLeases(session)) {'
-    legacySessionGraceAnchor='if (session.tabGroups.size === 0) {'
+    nativeSessionGraceAnchor='    if (session.tabGroups.size === 0 && !hasActivePageLeases(session)) {'
+    legacySessionGraceAnchor='    if (session.tabGroups.size === 0) {'
     if grep -Fqx "$nativeSessionGraceAnchor" "$camofoxServer"; then
       substituteInPlace "$camofoxServer" \
         --replace-fail "$nativeSessionGraceAnchor" \
-                       'if (session.tabGroups.size === 0 && !hasActivePageLeases(session) && now - session.lastAccess > 120000) {'
+                       '    if (session.tabGroups.size === 0 && !hasActivePageLeases(session) && now - session.lastAccess > 120000) {'
     elif grep -Fqx "$legacySessionGraceAnchor" "$camofoxServer"; then
       substituteInPlace "$camofoxServer" \
         --replace-fail "$legacySessionGraceAnchor" \
-                       'if (session.tabGroups.size === 0 && now - session.lastAccess > 120000) {'
+                       '    if (session.tabGroups.size === 0 && now - session.lastAccess > 120000) {'
     else
       echo "camofox-browser: unsupported empty-session grace layout" >&2
       exit 1

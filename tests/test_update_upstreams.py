@@ -550,7 +550,7 @@ substituteInPlace() {
     def test_camofox_session_grace_accepts_known_upstream_layouts(self) -> None:
         package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
         start = package.index(
-            "    nativeSessionGraceAnchor='if (session.tabGroups.size === 0"
+            "    nativeSessionGraceAnchor='    if (session.tabGroups.size === 0"
         )
         end = package.index("\n\n    # Cold Camoufox startup", start)
         guard = package[start:end]
@@ -578,26 +578,28 @@ substituteInPlace() {
                 )
 
             native = run(
-                "if (session.tabGroups.size === 0 && "
+                "    if (session.tabGroups.size === 0 && "
                 "!hasActivePageLeases(session)) {\n"
             )
             self.assertEqual(native.returncode, 0)
             self.assertEqual(
                 marker.read_text(),
-                "if (session.tabGroups.size === 0 && "
+                "    if (session.tabGroups.size === 0 && "
                 "!hasActivePageLeases(session) && "
                 "now - session.lastAccess > 120000) {",
             )
 
-            legacy = run("if (session.tabGroups.size === 0) {\n")
+            legacy = run("    if (session.tabGroups.size === 0) {\n")
             self.assertEqual(legacy.returncode, 0)
             self.assertEqual(
                 marker.read_text(),
-                "if (session.tabGroups.size === 0 && "
+                "    if (session.tabGroups.size === 0 && "
                 "now - session.lastAccess > 120000) {",
             )
 
-            unknown = run("if (session.tabGroups.size === 0 && changedLayout) {\n")
+            unknown = run(
+                "    if (session.tabGroups.size === 0 && changedLayout) {\n"
+            )
             self.assertNotEqual(unknown.returncode, 0)
             self.assertFalse(marker.exists())
             self.assertIn("unsupported empty-session grace layout", unknown.stderr)
