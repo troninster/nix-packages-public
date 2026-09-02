@@ -425,6 +425,30 @@ class CodexPackageContractTests(unittest.TestCase):
 
 
 class ExternalPackageContractTests(unittest.TestCase):
+    def test_go_package_source_hash_prefetches_unpacked_archive(self) -> None:
+        source = (ROOT / "scripts" / "update-upstream-inputs").read_text()
+        start = source.index("update_tagged_go_package()")
+        end = source.index("\n}\n\nupdate_tagged_npm_package", start)
+        block = source[start:end]
+        self.assertIn(
+            'prefetch_json true "https://github.com/${repo}/archive/${latest_tag}.tar.gz"',
+            block,
+        )
+        self.assertNotIn(
+            'prefetch_json false "https://github.com/${repo}/archive/${latest_tag}.tar.gz"',
+            block,
+        )
+
+    def test_camofox_candidate_copy_makes_store_source_writable(self) -> None:
+        source = (ROOT / "scripts" / "update-upstream-inputs").read_text()
+        start = source.index("block_camofox()")
+        end = source.index("\n}\n\n# Block: DevSpace", start)
+        block = source[start:end]
+        self.assertIn(
+            'cp -R --no-preserve=mode "$camofox_src_path"/. "$camofox_candidate_path"/',
+            block,
+        )
+
     def test_camofox_repair_runs_before_npm_prefetch(self) -> None:
         source = (ROOT / "scripts" / "update-upstream-inputs").read_text()
         repair = source.index("repair-camofox-package-lock.py")
