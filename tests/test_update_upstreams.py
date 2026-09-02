@@ -601,7 +601,7 @@ class ExternalPackageContractTests(unittest.TestCase):
     def test_go_packages_use_pinned_go126_builder(self) -> None:
         flake = (ROOT / "flake.nix").read_text()
         self.assertIn(
-            "codex.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module",
+            "hermes-agent.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module",
             flake,
         )
         for package in ("github-cli", "supabase-cli"):
