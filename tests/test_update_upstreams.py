@@ -630,7 +630,7 @@ class ExternalPackageContractTests(unittest.TestCase):
             self.assertEqual(pkgman.read_bytes(), before_pkgman)
             self.assertEqual(server.read_bytes(), before_server)
 
-    def test_camofox_package_pins_failed_run_candidate(self) -> None:
+    def test_camofox_package_pins_verified_114_candidate(self) -> None:
         package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
         for pin in (
             'camofoxBrowserVersion = "1.14.0";',
@@ -639,7 +639,7 @@ class ExternalPackageContractTests(unittest.TestCase):
             'camofoxBrowserNpmDepsHash = "sha256-W+8NKDqwBY6vJtgmrY5rYqDd4sxzBRbk65w9krwTK5g=";',
             'camoufoxEngineReleaseTag = "v152.0.4-beta.30";',
             'camoufoxEngineVersion = "152.0.4-beta.30";',
-            'camoufoxEngineHash = "sha256-e30ChokLEeek0Hk39SVU81q/Pc9Q3te657jioHu6C5g=";',
+            'camoufoxEngineHash = "sha256-VyDUW4lM4XcFQ94CTG8Q1RSzi+Vg+i3DIms9hYbK9nI=";',
         ):
             self.assertIn(pin, package)
 

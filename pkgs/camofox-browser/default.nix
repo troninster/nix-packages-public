@@ -48,7 +48,7 @@ let
   camofoxBrowserNpmDepsHash = "sha256-W+8NKDqwBY6vJtgmrY5rYqDd4sxzBRbk65w9krwTK5g=";
   camoufoxEngineReleaseTag = "v152.0.4-beta.30";
   camoufoxEngineVersion = "152.0.4-beta.30";
-  camoufoxEngineHash = "sha256-e30ChokLEeek0Hk39SVU81q/Pc9Q3te657jioHu6C5g=";
+  camoufoxEngineHash = "sha256-VyDUW4lM4XcFQ94CTG8Q1RSzi+Vg+i3DIms9hYbK9nI=";
   camoufoxEngineMetadata =
     let
       match = builtins.match "([0-9.]+)-(.+)" camoufoxEngineVersion;
