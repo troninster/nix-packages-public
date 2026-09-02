@@ -368,7 +368,7 @@ update_tagged_go_package() {
     return 0
   fi
 
-  source_json="$(prefetch_json false "https://github.com/${repo}/archive/${latest_tag}.tar.gz")"
+  source_json="$(prefetch_json true "https://github.com/${repo}/archive/${latest_tag}.tar.gz")"
   source_hash="$(printf '%s\n' "$source_json" | json_field hash)"
   if [[ -z "$source_hash" ]]; then
     echo "failed to prefetch ${package} source" >&2
@@ -625,7 +625,7 @@ block_camofox() {
     fi
     camofox_browser_version="$(json_file_field "$camofox_src_path/package.json" version)"
     camofox_candidate_path="$(mktemp -d)"
-    cp -R "$camofox_src_path"/. "$camofox_candidate_path"/
+    cp -R --no-preserve=mode "$camofox_src_path"/. "$camofox_candidate_path"/
     if ! python3 scripts/repair-camofox-package-lock.py \
       "$camofox_candidate_path/package-lock.json" \
       "$camofox_candidate_path/package.json"; then
