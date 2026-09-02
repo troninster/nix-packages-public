@@ -117,7 +117,8 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         publish_remaining = workflow_job(self.workflow, "publish-remaining")
         self.assertIn("needs: prepare-remaining", publish_remaining)
         self.assertIn(
-            "if: ${{ always() && needs.prepare-remaining.result == 'success' && "
+            "if: ${{ always() && !cancelled() && "
+            "needs.prepare-remaining.result == 'success' && "
             "needs.prepare-remaining.outputs.changed == 'true' }}",
             publish_remaining,
         )
