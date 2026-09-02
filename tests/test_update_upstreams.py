@@ -543,6 +543,9 @@ substituteInPlace() {
             self.assertNotEqual(unknown.returncode, 0)
             self.assertFalse(marker.exists())
             self.assertIn("unsupported default-addon layout", unknown.stderr)
+            self.assertEqual(
+                package.count("--set CAMOFOX_DISABLE_DEFAULT_ADDONS 1"), 1
+            )
 
     def test_camofox_lock_repair_handles_114_fixture_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -395,6 +395,7 @@ setInterval(async () => {
     makeWrapper ${nodejs}/bin/node $out/bin/camofox-browser \
       --add-flags "$out/lib/camofox-browser/server.js" \
       --set CAMOUFOX_INSTALL_DIR "$out/lib/camoufox-engine" \
+      --set CAMOFOX_DISABLE_DEFAULT_ADDONS 1 \
       --prefix LD_LIBRARY_PATH : "$out/lib/camoufox-engine:${lib.makeLibraryPath buildInputs}" \
       --prefix PATH : ${lib.makeBinPath runtimeDeps}
 
