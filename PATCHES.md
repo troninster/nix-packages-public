@@ -52,7 +52,8 @@ components record provenance the same way.
   request-timeout, idle-shutdown, launch-state, and active-health-probe changes.
   It first classifies all exact supported legacy and native layouts, reports
   every unknown or duplicate anchor without changing either source file, then
-  repeats the exact-count guards and atomically replaces both files. Native
+  repeats the exact-count guards, stages both outputs, and replaces each source
+  file individually. Preflight failures happen before any source write. Native
   behavior is preserved where upstream already implements it; unknown layouts
   stop the build.
 - **Reason:** these adaptations make the pinned browser run reproducibly from

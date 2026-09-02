@@ -491,6 +491,7 @@ class ExternalPackageContractTests(unittest.TestCase):
     ) -> None:
         namespace = runpy.run_path(str(CAMOFOX_COMPAT_PATCH))
         transforms = namespace["TRANSFORMS"]
+        native_user_nav_health = namespace["NATIVE_USER_NAV_HEALTH"]
         self.assertEqual(
             [transform.label for transform in transforms],
             [
@@ -523,6 +524,8 @@ class ExternalPackageContractTests(unittest.TestCase):
                 else:
                     name = "legacy" if "legacy" in variants else "shared"
                 sources[transform.target].append(variants[name].before)
+            if profile == "native-1.14":
+                sources["server"].append(native_user_nav_health)
             return {target: "\n\n".join(parts) for target, parts in sources.items()}
 
         with tempfile.TemporaryDirectory() as directory:
@@ -672,6 +675,57 @@ class ExternalPackageContractTests(unittest.TestCase):
             )
             self.assertEqual(pkgman.read_bytes(), before_pkgman)
             self.assertEqual(server.read_bytes(), before_server)
+
+    def test_camofox_compat_preflight_requires_single_native_user_nav_health(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(CAMOFOX_COMPAT_PATCH))
+        transforms = namespace["TRANSFORMS"]
+        declaration = namespace["NATIVE_USER_NAV_HEALTH"]
+        sources: dict[str, list[str]] = {"pkgman": [], "server": []}
+        for transform in transforms:
+            variants = {variant.name: variant for variant in transform.variants}
+            name = (
+                "native-1.14"
+                if "native-1.14" in variants
+                else "native"
+                if "native" in variants
+                else "shared"
+            )
+            sources[transform.target].append(variants[name].before)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pkgman = root / "pkgman.js"
+            server = root / "server.js"
+            for count in (0, 2):
+                with self.subTest(count=count):
+                    pkgman.write_text("\n\n".join(sources["pkgman"]))
+                    server.write_text(
+                        "\n\n".join(sources["server"] + [declaration] * count)
+                    )
+                    before_pkgman = pkgman.read_bytes()
+                    before_server = server.read_bytes()
+
+                    result = subprocess.run(
+                        [
+                            "python3",
+                            str(CAMOFOX_COMPAT_PATCH),
+                            str(pkgman),
+                            str(server),
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        f"user-nav-health declaration (native-1.14={count})",
+                        result.stderr,
+                    )
+                    self.assertEqual(pkgman.read_bytes(), before_pkgman)
+                    self.assertEqual(server.read_bytes(), before_server)
 
     def test_camofox_package_pins_verified_114_candidate(self) -> None:
         package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()

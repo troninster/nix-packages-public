@@ -142,6 +142,8 @@ NATIVE_BROWSER_LAUNCH = """      _lastBrowserPid = candidateBrowser.process?.()?
       attachBrowserCleanup(browser, localVirtualDisplay);
       pluginEvents.emit('browser:launched', { browser, display: vdDisplay });"""
 
+NATIVE_USER_NAV_HEALTH = "const userNavHealth = new Map();"
+
 TRANSFORMS = (
     Transform(
         "install-dir",
@@ -351,6 +353,11 @@ def preflight(sources: dict[str, str]) -> tuple[list[tuple[Transform, Variant]],
                 f"{label}={selected[label]}" for label in health_labels
             )
             errors.append(f"health-profile coherence ({summary})")
+
+    if selected.get("browser-launch") == "native-1.14":
+        count = sources["server"].count(NATIVE_USER_NAV_HEALTH)
+        if count != 1:
+            errors.append(f"user-nav-health declaration (native-1.14={count})")
     return plan, errors
 
 
