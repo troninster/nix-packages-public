@@ -79,6 +79,9 @@
               chmod -R u+w "$moduleDir"
             }
 
+            ${pkgs.bash}/bin/bash ${./scripts/ensure-hermes-registration-lifecycle} \
+              ${hermes-agent} "$sitePackages"
+
             # Telegram API allows 100 commands; lower menu limits hide plugin commands like /note.
             if [ -e "$sitePackages/gateway/platforms/telegram.py" ]; then
               copyPythonModule gateway
