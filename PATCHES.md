@@ -48,9 +48,10 @@ components record provenance the same way.
   active health probes skip idle browsers, avoid overlap, and reset state after
   relaunch.
 - **Mechanism:** the changes are declarative `substituteInPlace`
-  transformations with `--replace-fail`. The version-sensitive idle-shutdown
-  change first detects an already-fixed upstream and otherwise applies the
-  fail-loud substitution.
+  transformations with `--replace-fail`. The engine-path, default-addon, and
+  idle-shutdown changes detect supported native and legacy layouts, preserve
+  the native behavior, and otherwise apply the fail-loud compatibility patch.
+  Unknown layouts stop the build.
 - **Reason:** these adaptations make the pinned browser run reproducibly from
   the immutable Nix store and avoid observed cold-start, cleanup, and health
   probe races on NixOS.
