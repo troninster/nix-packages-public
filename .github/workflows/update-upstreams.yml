@@ -337,6 +337,8 @@ jobs:
 
       - name: Update remaining upstream inputs
         id: update
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/update-upstream-inputs --without-codex
 
       # `Flake check` remains informational. Changed packages must still build;

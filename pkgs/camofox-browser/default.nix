@@ -185,12 +185,23 @@ buildNpmPackage rec {
     chmod -R u+rwX,go+rX $out/lib/camoufox-engine
     echo ${lib.escapeShellArg (builtins.toJSON camoufoxEngineMetadata)} > $out/lib/camoufox-engine/version.json
 
-    # camoufox-js hard-codes ~/.cache/camoufox. Allow a Nix-store engine path.
-    substituteInPlace $out/lib/camofox-browser/node_modules/camoufox-js/dist/pkgman.js \
-      --replace-fail 'export const INSTALL_DIR = userCacheDir("camoufox");' \
-                     'export const INSTALL_DIR = process.env.CAMOUFOX_INSTALL_DIR || userCacheDir("camoufox");'
+    # Older camoufox-js releases hard-code ~/.cache/camoufox; newer releases
+    # support CAMOUFOX_INSTALL_DIR directly. Accept those two known source
+    # shapes and stop on any other layout so an upstream change cannot silently
+    # drop the Nix-store engine path.
+    camoufoxPkgman=$out/lib/camofox-browser/node_modules/camoufox-js/dist/pkgman.js
+    if grep -Fq 'export const INSTALL_DIR = process.env.CAMOUFOX_INSTALL_DIR' "$camoufoxPkgman"; then
+      echo "camofox-browser: upstream camoufox-js supports CAMOUFOX_INSTALL_DIR"
+    elif grep -Fq 'export const INSTALL_DIR = userCacheDir("camoufox");' "$camoufoxPkgman"; then
+      substituteInPlace "$camoufoxPkgman" \
+        --replace-fail 'export const INSTALL_DIR = userCacheDir("camoufox");' \
+                       'export const INSTALL_DIR = process.env.CAMOUFOX_INSTALL_DIR || userCacheDir("camoufox");'
+    else
+      echo "camofox-browser: unsupported camoufox-js INSTALL_DIR layout" >&2
+      exit 1
+    fi
 
-    substituteInPlace $out/lib/camofox-browser/node_modules/camoufox-js/dist/pkgman.js \
+    substituteInPlace "$camoufoxPkgman" \
       --replace-fail 'export function camoufoxPath(downloadIfMissing = true) {
     // Ensure the directory exists and is not empty' \
                      'export function camoufoxPath(downloadIfMissing = true) {

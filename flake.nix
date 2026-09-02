@@ -58,9 +58,9 @@
       overlays = [
         codex.inputs.rust-overlay.overlays.default
         (final: prev: {
-          # The pinned Codex nixpkgs input is the exact source for the Go 1.26
-          # builder while the root nixpkgs input still exposes Go 1.25 only.
-          buildGo126Module = codex.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module;
+          # The pinned Hermes nixpkgs input supplies a released Go 1.26 builder;
+          # Codex release locks can still point at pre-release Go toolchains.
+          buildGo126Module = hermes-agent.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module;
         })
       ];
     };
