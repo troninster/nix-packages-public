@@ -499,6 +499,54 @@ class ExternalPackageContractTests(unittest.TestCase):
             package,
         )
 
+    def test_camofox_default_addon_patch_accepts_known_upstream_layouts(self) -> None:
+        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
+        start = package.index("    camofoxServer=$out/lib/camofox-browser/server.js")
+        end = package.index("\n\n    # The upstream tab reaper", start)
+        guard = package[start:end]
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            server = out / "lib" / "camofox-browser" / "server.js"
+            server.parent.mkdir(parents=True)
+            marker = out / "patched"
+            script = """\
+set -euo pipefail
+out="$1"
+marker="$2"
+substituteInPlace() {
+  printf patched > "$marker"
+}
+""" + guard
+
+            def run(source: str) -> subprocess.CompletedProcess[str]:
+                server.write_text(source)
+                marker.unlink(missing_ok=True)
+                return subprocess.run(
+                    ["bash", "-c", script, "camofox-guard", str(out), str(marker)],
+                    capture_output=True,
+                    text=True,
+                )
+
+            native = run(
+                "        exclude_addons: "
+                "CONFIG.disableDefaultAddons ? ['UBO'] : undefined,\n"
+            )
+            self.assertEqual(native.returncode, 0)
+            self.assertFalse(marker.exists())
+
+            legacy = run("        virtual_display: vdDisplay,\n      });\n")
+            self.assertEqual(legacy.returncode, 0)
+            self.assertTrue(marker.exists())
+
+            unknown = run("        virtual_display: changedLayout,\n      });\n")
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertFalse(marker.exists())
+            self.assertIn("unsupported default-addon layout", unknown.stderr)
+            self.assertEqual(
+                package.count("--set CAMOFOX_DISABLE_DEFAULT_ADDONS 1"), 1
+            )
+
     def test_camofox_lock_repair_handles_114_fixture_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

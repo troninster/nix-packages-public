@@ -214,12 +214,21 @@ buildNpmPackage rec {
     # launch time. In Nix that path is the read-only browser engine in /nix/store,
     # so skip the default UBO addon rather than letting startup try to mutate the
     # store and log EROFS errors. Custom addons can still be passed explicitly.
-    substituteInPlace $out/lib/camofox-browser/server.js \
-      --replace-fail "        virtual_display: vdDisplay,
-      });" \
-                     "        virtual_display: vdDisplay,
+    camofoxServer=$out/lib/camofox-browser/server.js
+    legacyDefaultAddonAnchor="        virtual_display: vdDisplay,
+      });"
+    if grep -Fqx "        exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined," "$camofoxServer"; then
+      echo "camofox-browser: upstream supports disabling default addons"
+    elif [[ "$(cat "$camofoxServer")" == *"$legacyDefaultAddonAnchor"* ]]; then
+      substituteInPlace "$camofoxServer" \
+        --replace-fail "$legacyDefaultAddonAnchor" \
+                       "        virtual_display: vdDisplay,
         exclude_addons: ['UBO'],
       });"
+    else
+      echo "camofox-browser: unsupported default-addon layout" >&2
+      exit 1
+    fi
 
     # The upstream tab reaper runs every minute and closes sessions with zero
     # tabs. On slower NixOS/Camoufox starts, POST /tabs may create a session and
@@ -386,6 +395,7 @@ setInterval(async () => {
     makeWrapper ${nodejs}/bin/node $out/bin/camofox-browser \
       --add-flags "$out/lib/camofox-browser/server.js" \
       --set CAMOUFOX_INSTALL_DIR "$out/lib/camoufox-engine" \
+      --set CAMOFOX_DISABLE_DEFAULT_ADDONS 1 \
       --prefix LD_LIBRARY_PATH : "$out/lib/camoufox-engine:${lib.makeLibraryPath buildInputs}" \
       --prefix PATH : ${lib.makeBinPath runtimeDeps}
 
