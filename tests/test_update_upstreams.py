@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import runpy
 import shlex
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ ARTIFACT_TOOL = ROOT / "scripts" / "update-artifact"
 PACKAGE_DETECTOR = ROOT / "scripts" / "detect-ci-packages"
 CODEX_HASH_UPDATER = ROOT / "scripts" / "update-codex-cargo-hashes"
 CAMOFOX_LOCK_REPAIR = ROOT / "scripts" / "repair-camofox-package-lock.py"
+CAMOFOX_COMPAT_PATCH = ROOT / "scripts" / "patch-camofox-browser.py"
 
 
 def workflow_step(source: str, name: str) -> str:
@@ -484,68 +486,259 @@ class ExternalPackageContractTests(unittest.TestCase):
         package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
         self.assertIn("repair-camofox-package-lock.py", package)
 
-    def test_camofox_install_dir_patch_accepts_known_upstream_layouts(self) -> None:
-        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
-        self.assertIn(
-            "export const INSTALL_DIR = process.env.CAMOUFOX_INSTALL_DIR",
-            package,
-        )
-        self.assertIn(
-            'export const INSTALL_DIR = userCacheDir("camoufox");',
-            package,
-        )
-        self.assertIn(
-            "camofox-browser: unsupported camoufox-js INSTALL_DIR layout",
-            package,
+    def test_camofox_compat_patch_handles_legacy_current_and_native_layouts(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(CAMOFOX_COMPAT_PATCH))
+        transforms = namespace["TRANSFORMS"]
+        native_user_nav_health = namespace["NATIVE_USER_NAV_HEALTH"]
+        self.assertEqual(
+            [transform.label for transform in transforms],
+            [
+                "install-dir",
+                "camoufox-path",
+                "default-addons",
+                "session-grace",
+                "request-timeout",
+                "idle-shutdown",
+                "health-state",
+                "browser-launch",
+                "active-health-probe",
+            ],
         )
 
-    def test_camofox_default_addon_patch_accepts_known_upstream_layouts(self) -> None:
-        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
-        start = package.index("    camofoxServer=$out/lib/camofox-browser/server.js")
-        end = package.index("\n\n    # The upstream tab reaper", start)
-        guard = package[start:end]
+        def fixture(profile: str) -> dict[str, str]:
+            sources: dict[str, list[str]] = {"pkgman": [], "server": []}
+            for transform in transforms:
+                variants = {variant.name: variant for variant in transform.variants}
+                if profile == "native-1.14":
+                    name = (
+                        "native-1.14"
+                        if "native-1.14" in variants
+                        else "native"
+                        if "native" in variants
+                        else "shared"
+                    )
+                elif profile == "current-ce3" and transform.label == "idle-shutdown":
+                    name = "native"
+                else:
+                    name = "legacy" if "legacy" in variants else "shared"
+                sources[transform.target].append(variants[name].before)
+            if profile == "native-1.14":
+                sources["server"].append(native_user_nav_health)
+            return {target: "\n\n".join(parts) for target, parts in sources.items()}
 
         with tempfile.TemporaryDirectory() as directory:
-            out = Path(directory)
-            server = out / "lib" / "camofox-browser" / "server.js"
-            server.parent.mkdir(parents=True)
-            marker = out / "patched"
-            script = """\
-set -euo pipefail
-out="$1"
-marker="$2"
-substituteInPlace() {
-  printf patched > "$marker"
-}
-""" + guard
+            root = Path(directory)
+            pkgman = root / "pkgman.js"
+            server = root / "server.js"
+            for profile in ("legacy", "current-ce3", "native-1.14"):
+                with self.subTest(profile=profile):
+                    sources = fixture(profile)
+                    pkgman.write_text(sources["pkgman"])
+                    server.write_text(sources["server"])
+                    result = subprocess.run(
+                        ["python3", str(CAMOFOX_COMPAT_PATCH), str(pkgman), str(server)],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    patched_pkgman = pkgman.read_text()
+                    patched_server = server.read_text()
+                    self.assertIn("CAMOUFOX_INSTALL_DIR", patched_pkgman)
+                    self.assertIn("now - session.lastAccess > 120000", patched_server)
+                    self.assertIn("const localFloorMs = 120000;", patched_server)
+                    self.assertIn("let activeHealthProbeInFlight = false;", patched_server)
+                    self.assertIn(
+                        "if (!browser || healthState.isRecovering || "
+                        "activeHealthProbeInFlight) return;",
+                        patched_server,
+                    )
+                    self.assertIn(
+                        "if (sessions.size === 0 && getTotalTabCount() === 0) return;",
+                        patched_server,
+                    )
+                    if profile == "native-1.14":
+                        self.assertIn("userNavHealth.clear();", patched_server)
+                        self.assertIn(
+                            "browser.newContext({ viewport: null })", patched_server
+                        )
+                        self.assertNotIn(
+                            "healthState.consecutiveNavFailures = 0;", patched_server
+                        )
+                    else:
+                        self.assertIn(
+                            "healthState.consecutiveNavFailures = 0;", patched_server
+                        )
 
-            def run(source: str) -> subprocess.CompletedProcess[str]:
-                server.write_text(source)
-                marker.unlink(missing_ok=True)
-                return subprocess.run(
-                    ["bash", "-c", script, "camofox-guard", str(out), str(marker)],
-                    capture_output=True,
-                    text=True,
+        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
+        self.assertIn("scripts/patch-camofox-browser.py", package)
+        self.assertEqual(package.count("--set CAMOFOX_DISABLE_DEFAULT_ADDONS 1"), 1)
+
+    def test_camofox_compat_preflight_reports_all_drift_without_mutation(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(CAMOFOX_COMPAT_PATCH))
+        transforms = namespace["TRANSFORMS"]
+        sources: dict[str, list[str]] = {"pkgman": [], "server": []}
+        selected = {}
+        for transform in transforms:
+            variants = {variant.name: variant for variant in transform.variants}
+            name = (
+                "native-1.14"
+                if "native-1.14" in variants
+                else "native"
+                if "native" in variants
+                else "shared"
+            )
+            selected[transform.label] = variants[name]
+            sources[transform.target].append(variants[name].before)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pkgman = root / "pkgman.js"
+            server = root / "server.js"
+            pkgman_source = "\n\n".join(sources["pkgman"]).replace(
+                selected["install-dir"].before, "export const INSTALL_DIR = drift;"
+            )
+            server_source = "\n\n".join(sources["server"])
+            for label in ("session-grace", "health-state", "active-health-probe"):
+                server_source = server_source.replace(
+                    selected[label].before, f"/* drift: {label} */"
                 )
+            server_source += "\n\n" + selected["request-timeout"].before
+            pkgman.write_text(pkgman_source)
+            server.write_text(server_source)
+            before_pkgman = pkgman.read_bytes()
+            before_server = server.read_bytes()
 
-            native = run(
-                "        exclude_addons: "
-                "CONFIG.disableDefaultAddons ? ['UBO'] : undefined,\n"
+            result = subprocess.run(
+                ["python3", str(CAMOFOX_COMPAT_PATCH), str(pkgman), str(server)],
+                check=False,
+                capture_output=True,
+                text=True,
             )
-            self.assertEqual(native.returncode, 0)
-            self.assertFalse(marker.exists())
 
-            legacy = run("        virtual_display: vdDisplay,\n      });\n")
-            self.assertEqual(legacy.returncode, 0)
-            self.assertTrue(marker.exists())
+            self.assertNotEqual(result.returncode, 0)
+            for label in (
+                "install-dir",
+                "session-grace",
+                "request-timeout",
+                "health-state",
+                "active-health-probe",
+            ):
+                self.assertIn(label, result.stderr)
+            self.assertIn("shared=2", result.stderr)
+            self.assertEqual(pkgman.read_bytes(), before_pkgman)
+            self.assertEqual(server.read_bytes(), before_server)
 
-            unknown = run("        virtual_display: changedLayout,\n      });\n")
-            self.assertNotEqual(unknown.returncode, 0)
-            self.assertFalse(marker.exists())
-            self.assertIn("unsupported default-addon layout", unknown.stderr)
-            self.assertEqual(
-                package.count("--set CAMOFOX_DISABLE_DEFAULT_ADDONS 1"), 1
+    def test_camofox_compat_preflight_rejects_mixed_health_profile(self) -> None:
+        namespace = runpy.run_path(str(CAMOFOX_COMPAT_PATCH))
+        transforms = namespace["TRANSFORMS"]
+        sources: dict[str, list[str]] = {"pkgman": [], "server": []}
+        for transform in transforms:
+            variants = {variant.name: variant for variant in transform.variants}
+            if transform.label == "browser-launch":
+                name = "legacy"
+            else:
+                name = (
+                    "native-1.14"
+                    if "native-1.14" in variants
+                    else "native"
+                    if "native" in variants
+                    else "shared"
+                )
+            sources[transform.target].append(variants[name].before)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pkgman = root / "pkgman.js"
+            server = root / "server.js"
+            pkgman.write_text("\n\n".join(sources["pkgman"]))
+            server.write_text("\n\n".join(sources["server"]))
+            before_pkgman = pkgman.read_bytes()
+            before_server = server.read_bytes()
+
+            result = subprocess.run(
+                ["python3", str(CAMOFOX_COMPAT_PATCH), str(pkgman), str(server)],
+                check=False,
+                capture_output=True,
+                text=True,
             )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "health-profile coherence (health-state=native-1.14, "
+                "browser-launch=legacy, active-health-probe=native-1.14)",
+                result.stderr,
+            )
+            self.assertEqual(pkgman.read_bytes(), before_pkgman)
+            self.assertEqual(server.read_bytes(), before_server)
+
+    def test_camofox_compat_preflight_requires_single_native_user_nav_health(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(CAMOFOX_COMPAT_PATCH))
+        transforms = namespace["TRANSFORMS"]
+        declaration = namespace["NATIVE_USER_NAV_HEALTH"]
+        sources: dict[str, list[str]] = {"pkgman": [], "server": []}
+        for transform in transforms:
+            variants = {variant.name: variant for variant in transform.variants}
+            name = (
+                "native-1.14"
+                if "native-1.14" in variants
+                else "native"
+                if "native" in variants
+                else "shared"
+            )
+            sources[transform.target].append(variants[name].before)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pkgman = root / "pkgman.js"
+            server = root / "server.js"
+            for count in (0, 2):
+                with self.subTest(count=count):
+                    pkgman.write_text("\n\n".join(sources["pkgman"]))
+                    server.write_text(
+                        "\n\n".join(sources["server"] + [declaration] * count)
+                    )
+                    before_pkgman = pkgman.read_bytes()
+                    before_server = server.read_bytes()
+
+                    result = subprocess.run(
+                        [
+                            "python3",
+                            str(CAMOFOX_COMPAT_PATCH),
+                            str(pkgman),
+                            str(server),
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        f"user-nav-health declaration (native-1.14={count})",
+                        result.stderr,
+                    )
+                    self.assertEqual(pkgman.read_bytes(), before_pkgman)
+                    self.assertEqual(server.read_bytes(), before_server)
+
+    def test_camofox_package_pins_verified_114_candidate(self) -> None:
+        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
+        for pin in (
+            'camofoxBrowserVersion = "1.14.0";',
+            'camofoxBrowserRev = "e5a36f5cd0332fde6597de474329a308a53a0716";',
+            'camofoxBrowserHash = "sha256-POVwAiVoScS5c1QMZslz1wbfWttYdeQEy2msxoVt+uk=";',
+            'camofoxBrowserNpmDepsHash = "sha256-W+8NKDqwBY6vJtgmrY5rYqDd4sxzBRbk65w9krwTK5g=";',
+            'camoufoxEngineReleaseTag = "v152.0.4-beta.30";',
+            'camoufoxEngineVersion = "152.0.4-beta.30";',
+            'camoufoxEngineHash = "sha256-VyDUW4lM4XcFQ94CTG8Q1RSzi+Vg+i3DIms9hYbK9nI=";',
+        ):
+            self.assertIn(pin, package)
 
     def test_camofox_lock_repair_handles_114_fixture_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

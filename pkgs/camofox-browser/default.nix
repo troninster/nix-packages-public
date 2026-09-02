@@ -42,13 +42,13 @@
 }:
 
 let
-  camofoxBrowserVersion = "1.11.2";
-  camofoxBrowserRev = "ce3a3b085aacba73eb8de6c51733c19fb13bfae4";
-  camofoxBrowserHash = "sha256-4ca/zUNe/3h4H9SbyP/1DDPM8zlWXmb+SrPF1qzgy9c=";
-  camofoxBrowserNpmDepsHash = "sha256-FDecut8Gsy2pHrHRzpGf1Xw1Uvzjtaoq6JUhAyTUQsA=";
-  camoufoxEngineReleaseTag = "v152.0.4-beta.27";
-  camoufoxEngineVersion = "152.0.4-beta.27";
-  camoufoxEngineHash = "sha256-xtJLGBltj6vPB06dU996AmMjyy4wsl/TYwva4CXBpEs=";
+  camofoxBrowserVersion = "1.14.0";
+  camofoxBrowserRev = "e5a36f5cd0332fde6597de474329a308a53a0716";
+  camofoxBrowserHash = "sha256-POVwAiVoScS5c1QMZslz1wbfWttYdeQEy2msxoVt+uk=";
+  camofoxBrowserNpmDepsHash = "sha256-W+8NKDqwBY6vJtgmrY5rYqDd4sxzBRbk65w9krwTK5g=";
+  camoufoxEngineReleaseTag = "v152.0.4-beta.30";
+  camoufoxEngineVersion = "152.0.4-beta.30";
+  camoufoxEngineHash = "sha256-VyDUW4lM4XcFQ94CTG8Q1RSzi+Vg+i3DIms9hYbK9nI=";
   camoufoxEngineMetadata =
     let
       match = builtins.match "([0-9.]+)-(.+)" camoufoxEngineVersion;
@@ -185,212 +185,13 @@ buildNpmPackage rec {
     chmod -R u+rwX,go+rX $out/lib/camoufox-engine
     echo ${lib.escapeShellArg (builtins.toJSON camoufoxEngineMetadata)} > $out/lib/camoufox-engine/version.json
 
-    # Older camoufox-js releases hard-code ~/.cache/camoufox; newer releases
-    # support CAMOUFOX_INSTALL_DIR directly. Accept those two known source
-    # shapes and stop on any other layout so an upstream change cannot silently
-    # drop the Nix-store engine path.
     camoufoxPkgman=$out/lib/camofox-browser/node_modules/camoufox-js/dist/pkgman.js
-    if grep -Fq 'export const INSTALL_DIR = process.env.CAMOUFOX_INSTALL_DIR' "$camoufoxPkgman"; then
-      echo "camofox-browser: upstream camoufox-js supports CAMOUFOX_INSTALL_DIR"
-    elif grep -Fq 'export const INSTALL_DIR = userCacheDir("camoufox");' "$camoufoxPkgman"; then
-      substituteInPlace "$camoufoxPkgman" \
-        --replace-fail 'export const INSTALL_DIR = userCacheDir("camoufox");' \
-                       'export const INSTALL_DIR = process.env.CAMOUFOX_INSTALL_DIR || userCacheDir("camoufox");'
-    else
-      echo "camofox-browser: unsupported camoufox-js INSTALL_DIR layout" >&2
-      exit 1
-    fi
-
-    substituteInPlace "$camoufoxPkgman" \
-      --replace-fail 'export function camoufoxPath(downloadIfMissing = true) {
-    // Ensure the directory exists and is not empty' \
-                     'export function camoufoxPath(downloadIfMissing = true) {
-    if (process.env.CAMOUFOX_INSTALL_DIR && fs.existsSync(INSTALL_DIR) && fs.readdirSync(INSTALL_DIR).length > 0) {
-        return INSTALL_DIR;
-    }
-    // Ensure the directory exists and is not empty'
-
-    # Default camoufox-js addons are downloaded into CAMOUFOX_INSTALL_DIR at
-    # launch time. In Nix that path is the read-only browser engine in /nix/store,
-    # so skip the default UBO addon rather than letting startup try to mutate the
-    # store and log EROFS errors. Custom addons can still be passed explicitly.
     camofoxServer=$out/lib/camofox-browser/server.js
-    legacyDefaultAddonAnchor="        virtual_display: vdDisplay,
-      });"
-    if grep -Fqx "        exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined," "$camofoxServer"; then
-      echo "camofox-browser: upstream supports disabling default addons"
-    elif [[ "$(cat "$camofoxServer")" == *"$legacyDefaultAddonAnchor"* ]]; then
-      substituteInPlace "$camofoxServer" \
-        --replace-fail "$legacyDefaultAddonAnchor" \
-                       "        virtual_display: vdDisplay,
-        exclude_addons: ['UBO'],
-      });"
-    else
-      echo "camofox-browser: unsupported default-addon layout" >&2
-      exit 1
-    fi
-
-    # The upstream tab reaper runs every minute and closes sessions with zero
-    # tabs. On slower NixOS/Camoufox starts, POST /tabs may create a session and
-    # then spend 15-25s in browserContext.newPage() before adding the first tab;
-    # if the reaper ticks during that window it closes the context under the
-    # request and /tabs returns "Target page, context or browser has been
-    # closed". Give fresh empty sessions a short grace period.
-    substituteInPlace $out/lib/camofox-browser/server.js \
-      --replace-fail 'if (session.tabGroups.size === 0) {' \
-                     'if (session.tabGroups.size === 0 && now - session.lastAccess > 120000) {'
-
-    # Cold Camoufox startup on this NixOS profile can exceed the upstream 30s
-    # generic handler timeout. Give request-scoped routes enough budget for a
-    # browser launch plus the actual operation; proxy rotation keeps its larger
-    # upstream floor.
-    substituteInPlace $out/lib/camofox-browser/server.js \
-      --replace-fail "function requestTimeoutMs(baseMs = HANDLER_TIMEOUT_MS) {
-  return proxyPool?.canRotateSessions ? Math.max(baseMs, 180000) : baseMs;
-}" \
-                     "function requestTimeoutMs(baseMs = HANDLER_TIMEOUT_MS) {
-  const localFloorMs = 120000;
-  const proxyFloorMs = 180000;
-  return proxyPool?.canRotateSessions ? Math.max(baseMs, proxyFloorMs) : Math.max(baseMs, localFloorMs);
-}"
-
-    # The upstream cleanup intervals used to call scheduleBrowserIdleShutdown()
-    # every minute while sessions.size == 0. Older versions cleared and
-    # recreated the timer each time, so the 5-minute browser idle shutdown never
-    # fired. Newer upstream versions are already idempotent; keep the local patch
-    # only for old reset-on-call implementations.
-    if grep -Fq "if (browserIdleTimer || sessions.size > 0 || !browser) return;" \
-      $out/lib/camofox-browser/server.js; then
-      echo "camofox-browser: upstream idle shutdown timer is already idempotent"
-    else
-      substituteInPlace $out/lib/camofox-browser/server.js \
-        --replace-fail "function scheduleBrowserIdleShutdown() {
-  clearBrowserIdleTimer();
-  if (sessions.size === 0 && browser) {
-    browserIdleTimer = setTimeout(async () => {
-      if (sessions.size === 0 && browser) {
-        log('info', 'browser idle shutdown (no sessions)');
-        await closeBrowserFully('idle_shutdown');
-      }
-    }, BROWSER_IDLE_TIMEOUT_MS);
-  }
-}" \
-                       "function scheduleBrowserIdleShutdown() {
-  if (browserIdleTimer) return;
-  if (sessions.size === 0 && browser) {
-    browserIdleTimer = setTimeout(async () => {
-      browserIdleTimer = null;
-      if (sessions.size === 0 && browser) {
-        log('info', 'browser idle shutdown (no sessions)');
-        await closeBrowserFully('idle_shutdown');
-      }
-    }, BROWSER_IDLE_TIMEOUT_MS);
-  }
-}"
-    fi
-
-    # Keep health probes from becoming their own background workload: do not
-    # probe an idle browser with no sessions/tabs, and do not let async probe
-    # attempts overlap if Camoufox/Juggler is wedged.
-    substituteInPlace $out/lib/camofox-browser/server.js \
-      --replace-fail "const healthState = {
-  consecutiveNavFailures: 0,
-  lastSuccessfulNav: Date.now(),
-  isRecovering: false,
-  activeOps: 0,
-};" \
-                     "const healthState = {
-  consecutiveNavFailures: 0,
-  lastSuccessfulNav: Date.now(),
-  isRecovering: false,
-  activeOps: 0,
-};
-let activeHealthProbeInFlight = false;"
-
-    # A browser relaunched after idle shutdown can inherit a stale
-    # lastSuccessfulNav value. Reset it on launch so the first real operation
-    # after a long idle window does not race the active health probe.
-    substituteInPlace $out/lib/camofox-browser/server.js \
-      --replace-fail "      pluginEvents.emit('browser:launched', { browser, display: vdDisplay });" \
-                     "      pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
-      healthState.consecutiveNavFailures = 0;
-      healthState.lastSuccessfulNav = Date.now();"
-
-    substituteInPlace $out/lib/camofox-browser/server.js \
-      --replace-fail "// Active health probe -- detect hung browser even when isConnected() lies
-setInterval(async () => {
-  if (!browser || healthState.isRecovering) return;
-  const timeSinceSuccess = Date.now() - healthState.lastSuccessfulNav;
-  // Skip probe if operations are in flight AND last success was recent.
-  // If it's been >120s since any successful operation, probe anyway --
-  // active ops are likely stuck on a frozen browser and will time out eventually.
-  if (healthState.activeOps > 0 && timeSinceSuccess < 120000) {
-    log('info', 'health probe skipped, operations active', { activeOps: healthState.activeOps });
-    return;
-  }
-  if (timeSinceSuccess < 120000) return;
-${"  "}
-  if (healthState.activeOps > 0) {
-    log('warn', 'health probe forced despite active ops', { activeOps: healthState.activeOps, timeSinceSuccessMs: timeSinceSuccess });
-  }
-${"  "}
-  let testContext;
-  try {
-    testContext = await browser.newContext();
-    const page = await testContext.newPage();
-    await page.goto('about:blank', { timeout: 5000 });
-    await page.close();
-    await testContext.close();
-    healthState.lastSuccessfulNav = Date.now();
-  } catch (err) {
-    failuresTotal.labels('health_probe', 'internal').inc();
-    log('warn', 'health probe failed', { error: err.message, timeSinceSuccessMs: timeSinceSuccess });
-    if (testContext) await testContext.close().catch(() => {});
-    restartBrowser('health probe failed').catch(() => {});
-  }
-}, 60_000);" \
-                     "// Active health probe -- detect hung browser even when isConnected() lies
-setInterval(async () => {
-  if (!browser || healthState.isRecovering || activeHealthProbeInFlight) return;
-  if (sessions.size === 0 && getTotalTabCount() === 0) return;
-  const timeSinceSuccess = Date.now() - healthState.lastSuccessfulNav;
-  // Skip probe if operations are in flight AND last success was recent.
-  // If it's been >120s since any successful operation, probe anyway --
-  // active ops are likely stuck on a frozen browser and will time out eventually.
-  if (healthState.activeOps > 0 && timeSinceSuccess < 120000) {
-    log('info', 'health probe skipped, operations active', { activeOps: healthState.activeOps });
-    return;
-  }
-  if (timeSinceSuccess < 120000) return;
-
-  if (healthState.activeOps > 0) {
-    log('warn', 'health probe forced despite active ops', { activeOps: healthState.activeOps, timeSinceSuccessMs: timeSinceSuccess });
-  }
-
-  activeHealthProbeInFlight = true;
-  let testContext;
-  try {
-    testContext = await browser.newContext();
-    const page = await testContext.newPage();
-    await page.goto('about:blank', { timeout: 5000 });
-    await page.close().catch(() => {});
-    await testContext.close();
-    testContext = null;
-    healthState.consecutiveNavFailures = 0;
-    healthState.lastSuccessfulNav = Date.now();
-  } catch (err) {
-    failuresTotal.labels('health_probe', 'internal').inc();
-    log('warn', 'health probe failed', { error: err.message, timeSinceSuccessMs: timeSinceSuccess });
-    if (sessions.size > 0 || getTotalTabCount() > 0 || healthState.activeOps > 0) {
-      restartBrowser('health probe failed').catch(() => {});
-    } else {
-      scheduleBrowserIdleShutdown();
-    }
-  } finally {
-    if (testContext) await testContext.close().catch(() => {});
-    activeHealthProbeInFlight = false;
-  }
-}, 60_000);"
+    # Classify every supported source layout before either file is changed.
+    # Unknown or duplicate anchors are reported together and stop the build;
+    # the apply phase repeats each exact-count guard before atomic file writes.
+    ${python3}/bin/python ${../../scripts/patch-camofox-browser.py} \
+      "$camoufoxPkgman" "$camofoxServer"
 
     makeWrapper ${nodejs}/bin/node $out/bin/camofox-browser \
       --add-flags "$out/lib/camofox-browser/server.js" \

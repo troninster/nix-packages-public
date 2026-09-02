@@ -47,11 +47,15 @@ components record provenance the same way.
   keeps idle shutdown idempotent on affected upstream versions; and makes
   active health probes skip idle browsers, avoid overlap, and reset state after
   relaunch.
-- **Mechanism:** the changes are declarative `substituteInPlace`
-  transformations with `--replace-fail`. The engine-path, default-addon, and
-  idle-shutdown changes detect supported native and legacy layouts, configure
-  the native behavior through the server wrapper, and otherwise apply the
-  fail-loud compatibility patch. Unknown layouts stop the build.
+- **Mechanism:** `scripts/patch-camofox-browser.py` performs a two-phase
+  compatibility pass over the engine-path, default-addon, session-grace,
+  request-timeout, idle-shutdown, launch-state, and active-health-probe changes.
+  It first classifies all exact supported legacy and native layouts, reports
+  every unknown or duplicate anchor without changing either source file, then
+  repeats the exact-count guards, stages both outputs, and replaces each source
+  file individually. Preflight failures happen before any source write. Native
+  behavior is preserved where upstream already implements it; unknown layouts
+  stop the build.
 - **Reason:** these adaptations make the pinned browser run reproducibly from
   the immutable Nix store and avoid observed cold-start, cleanup, and health
   probe races on NixOS.
