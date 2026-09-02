@@ -547,6 +547,61 @@ substituteInPlace() {
                 package.count("--set CAMOFOX_DISABLE_DEFAULT_ADDONS 1"), 1
             )
 
+    def test_camofox_session_grace_accepts_known_upstream_layouts(self) -> None:
+        package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
+        start = package.index(
+            "    nativeSessionGraceAnchor='if (session.tabGroups.size === 0"
+        )
+        end = package.index("\n\n    # Cold Camoufox startup", start)
+        guard = package[start:end]
+
+        with tempfile.TemporaryDirectory() as directory:
+            server = Path(directory) / "server.js"
+            marker = Path(directory) / "replacement"
+            script = """\
+set -euo pipefail
+camofoxServer="$1"
+marker="$2"
+substituteInPlace() {
+  test "$2" = --replace-fail
+  printf '%s' "$4" > "$marker"
+}
+""" + guard
+
+            def run(source: str) -> subprocess.CompletedProcess[str]:
+                server.write_text(source)
+                marker.unlink(missing_ok=True)
+                return subprocess.run(
+                    ["bash", "-c", script, "camofox-guard", str(server), str(marker)],
+                    capture_output=True,
+                    text=True,
+                )
+
+            native = run(
+                "if (session.tabGroups.size === 0 && "
+                "!hasActivePageLeases(session)) {\n"
+            )
+            self.assertEqual(native.returncode, 0)
+            self.assertEqual(
+                marker.read_text(),
+                "if (session.tabGroups.size === 0 && "
+                "!hasActivePageLeases(session) && "
+                "now - session.lastAccess > 120000) {",
+            )
+
+            legacy = run("if (session.tabGroups.size === 0) {\n")
+            self.assertEqual(legacy.returncode, 0)
+            self.assertEqual(
+                marker.read_text(),
+                "if (session.tabGroups.size === 0 && "
+                "now - session.lastAccess > 120000) {",
+            )
+
+            unknown = run("if (session.tabGroups.size === 0 && changedLayout) {\n")
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertFalse(marker.exists())
+            self.assertIn("unsupported empty-session grace layout", unknown.stderr)
+
     def test_camofox_lock_repair_handles_114_fixture_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
