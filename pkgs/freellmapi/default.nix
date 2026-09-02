@@ -46,7 +46,7 @@ buildNpmPackage rec {
     # that broken self-link after copying the server/client dependencies.
     rm -f $out/lib/freellmapi/node_modules/freellmapi
     test ! -e $out/lib/freellmapi/node_modules/freellmapi
-    cp -r server/dist server/package.json $out/lib/freellmapi/server/
+    cp -r server/dist server/package.json server/node_modules $out/lib/freellmapi/server/
     cp -r client/dist client/package.json $out/lib/freellmapi/client/
     cp -r shared $out/lib/freellmapi/shared
 
@@ -54,6 +54,17 @@ buildNpmPackage rec {
       --add-flags "$out/lib/freellmapi/server/dist/index.js"
 
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+
+    (cd $out/lib/freellmapi/server && \
+      ${nodejs_22}/bin/node --input-type=module --eval \
+        "await import('ajv/dist/2020.js')")
+
+    runHook postInstallCheck
   '';
 
   meta = {

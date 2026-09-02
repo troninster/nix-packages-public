@@ -866,8 +866,10 @@ class ExternalPackageContractTests(unittest.TestCase):
         self.assertIn("npm run build:server", source)
         self.assertIn("npm run build -w client", source)
         self.assertNotIn("\nnpm run build -w cli\n", source)
-        self.assertIn("server/dist server/package.json", source)
+        self.assertIn("server/dist server/package.json server/node_modules", source)
         self.assertIn("client/dist client/package.json", source)
+        self.assertIn("doInstallCheck = true;", source)
+        self.assertIn("await import('ajv/dist/2020.js')", source)
         self.assertIn(
             "rm -f $out/lib/freellmapi/node_modules/freellmapi", source
         )
