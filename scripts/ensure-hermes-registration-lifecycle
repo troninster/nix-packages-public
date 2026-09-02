@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 2 ]]; then
+  echo "usage: ensure-hermes-registration-lifecycle SOURCE_ROOT SITE_PACKAGES" >&2
+  exit 64
+fi
+
+source_root="$1"
+site_packages="$2"
+plugins_source="$source_root/hermes_cli/plugins.py"
+metadata_source="$source_root/pyproject.toml"
+registration_source="$source_root/registration_lifecycle.py"
+registration_target="$site_packages/registration_lifecycle.py"
+
+for source_path in "$plugins_source" "$metadata_source" "$registration_source"; do
+  if [[ ! -f "$source_path" ]]; then
+    echo "Hermes registration lifecycle source layout changed: $source_path" >&2
+    exit 1
+  fi
+done
+
+if ! grep -Fqx \
+  "from registration_lifecycle import replacement_coordinator" \
+  "$plugins_source"; then
+  echo "Hermes registration lifecycle import changed." >&2
+  exit 1
+fi
+
+if grep -Fqx '  "registration_lifecycle",' "$metadata_source"; then
+  if [[ ! -f "$registration_target" ]]; then
+    echo "Hermes declares registration_lifecycle but the built environment omits it." >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+if [[ -e "$registration_target" || -L "$registration_target" ]]; then
+  echo "Hermes installed registration_lifecycle without the canonical metadata declaration." >&2
+  exit 1
+fi
+
+install -m 0444 "$registration_source" "$registration_target"

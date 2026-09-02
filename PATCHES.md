@@ -18,11 +18,15 @@ components record provenance the same way.
   upstream layout, then rewires the Hermes launchers to the derived environment.
   For upstream `v2026.8.13`, which imports the top-level
   `registration_lifecycle` module but omits it from the wheel metadata, the same
-  derived environment installs that exact source module.
+  derived environment installs that exact source module. Releases such as
+  `v2026.8.31` that declare and package the module keep the upstream-installed
+  implementation instead.
 - **Mechanism:** every textual substitution uses `substituteInPlace` with
   `--replace-fail`, so an upstream source drift that invalidates the expected
-  text fails the build loudly. The compatibility copy is conditional on the
-  exact upstream import, rejects an already-packaged module, and ends with an
+  text fails the build loudly. The registration helper requires the exact
+  upstream import, source module, and canonical packaging declaration. A
+  declared module must already exist in the built environment; an undeclared
+  module is copied only when absent. Contradictory layouts fail before the final
   import smoke test.
 - **Reason:** Telegram's Bot API permits 100 commands per scope. The lower
   Hermes cap hid later plugin commands such as `/note` from the menu. The
