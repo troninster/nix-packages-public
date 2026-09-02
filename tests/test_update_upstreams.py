@@ -113,6 +113,16 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         self.assertIn("needs.publish-codex.result == 'skipped'", remaining_job)
         self.assertNotIn("needs.publish-codex.result == 'failure'", remaining_job)
 
+    def test_remaining_publisher_survives_skipped_codex_noop(self) -> None:
+        publish_remaining = workflow_job(self.workflow, "publish-remaining")
+        self.assertIn("needs: prepare-remaining", publish_remaining)
+        self.assertIn(
+            "if: ${{ always() && !cancelled() && "
+            "needs.prepare-remaining.result == 'success' && "
+            "needs.prepare-remaining.outputs.changed == 'true' }}",
+            publish_remaining,
+        )
+
     def test_every_action_is_pinned_to_a_full_sha_with_version_comment(self) -> None:
         uses_lines = re.findall(
             r"^\s*uses:\s+([^@\s]+)@([^\s]+)(.*)$", self.workflow, re.MULTILINE
