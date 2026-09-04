@@ -8,11 +8,11 @@
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "omp";
-  version = "18.1.8";
+  version = "18.1.10";
 
   src = fetchurl {
     url = "https://github.com/can1357/oh-my-pi/releases/download/v${finalAttrs.version}/omp-linux-x64";
-    hash = "sha256-wJ1aecRLZDW1kXt9XIR7CVHUg1HnHbr5/Qa8LihXct0=";
+    hash = "sha256-6R1VmO5H4dQJn9hobcn2HJt1Xy6gd9Xxd0q6EHIyH54=";
   };
 
   dontUnpack = true;
