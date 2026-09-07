@@ -217,6 +217,10 @@ classify_file() {
       add_package "supabase-cli"
       add_package "symphony-ts"
       ;;
+    scripts/ensure-hermes-registration-lifecycle | tests/test_hermes_registration_lifecycle.py)
+      run_checks="true"
+      add_package "hermes-agent"
+      ;;
     scripts/update-codex-cargo-hashes)
       run_checks="true"
       add_package "codex"

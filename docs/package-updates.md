@@ -83,6 +83,7 @@ base and head commits before creating the package build matrix.
 - `pkgs/camoufox-agent/**` and `tools/camoufox-agent/**` build
   `camoufox-agent`.
 - `pkgs/archon/**` builds `archon`.
+- The registration-lifecycle helper and its focused tests build `hermes-agent`.
 - `flake.lock` changes build only the root input closure that changed:
   `codex`, `hermes-agent`, or all packages when the repository `nixpkgs` input
   changed.

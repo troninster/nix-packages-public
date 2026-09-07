@@ -89,7 +89,11 @@
                 --replace-fail "MAX_COMMANDS_PER_SCOPE = 30" "MAX_COMMANDS_PER_SCOPE = 100"
             else
               copyPythonModule hermes_cli
-              substituteInPlace "$sitePackages/hermes_cli/commands.py" \
+              commandsFile="$sitePackages/hermes_cli/commands.py"
+              if [ -e "$sitePackages/hermes_cli/commands_platforms.py" ]; then
+                commandsFile="$sitePackages/hermes_cli/commands_platforms.py"
+              fi
+              substituteInPlace "$commandsFile" \
                 --replace-fail "_DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 60" \
                 "_DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 100"
             fi

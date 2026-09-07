@@ -43,6 +43,7 @@ class HermesRegistrationLifecycleTests(unittest.TestCase):
         cases = (
             ("old-source", False, None, "source implementation\n"),
             ("new-source", True, "upstream packaged\n", "upstream packaged\n"),
+            ("dynamic-modules", False, "upstream packaged\n", "upstream packaged\n"),
         )
         for name, declared, installed, expected in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:

@@ -27,16 +27,19 @@ if ! grep -Fqx \
   exit 1
 fi
 
-if grep -Fqx '  "registration_lifecycle",' "$metadata_source"; then
-  if [[ ! -f "$registration_target" ]]; then
-    echo "Hermes declares registration_lifecycle but the built environment omits it." >&2
-    exit 1
-  fi
+# Upstream setup.py now discovers root modules dynamically instead of listing
+# them in pyproject.toml. Preserve the module supplied by either packaging path.
+if [[ -f "$registration_target" ]]; then
   exit 0
 fi
 
+if grep -Fqx '  "registration_lifecycle",' "$metadata_source"; then
+  echo "Hermes declares registration_lifecycle but the built environment omits it." >&2
+  exit 1
+fi
+
 if [[ -e "$registration_target" || -L "$registration_target" ]]; then
-  echo "Hermes installed registration_lifecycle without the canonical metadata declaration." >&2
+  echo "Hermes registration_lifecycle target is not a regular file." >&2
   exit 1
 fi
 
