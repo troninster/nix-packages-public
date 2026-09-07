@@ -285,14 +285,11 @@ declare -A block_status=([github_cli]=FAILED [camofox]=OK)
             with self.subTest(package=package):
                 self.assertIn(f'add_package "{package}"', self.detector)
 
-    def test_codex_and_hermes_current_upgrade_contracts(self) -> None:
+    def test_codex_and_hermes_upgrade_contracts_are_version_independent(self) -> None:
         flake = (ROOT / "flake.nix").read_text()
-        self.assertIn('github:openai/codex/rust-v0.149.1', flake)
+        self.assertRegex(flake, r'github:openai/codex/rust-v\d+\.\d+\.\d+')
         self.assertNotIn("registration_lifecycle", flake)
         self.assertIn('#![recursion_limit = "256"]', flake)
-        lock = json.loads((ROOT / "flake.lock").read_text())
-        self.assertEqual(lock["nodes"]["codex"]["original"]["ref"], "rust-v0.149.1")
-        self.assertEqual(lock["nodes"]["hermes-agent"]["locked"]["rev"], "057dcdf236f8a6a26721c10fcc6ccb72726e272a")
 
     def test_current_codex_source_and_lock_identities_match(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
@@ -353,6 +350,21 @@ declare -A block_status=([github_cli]=FAILED [camofox]=OK)
 
 
 class CodexPackageContractTests(unittest.TestCase):
+    def test_codex_registry_crates_use_the_official_static_download_endpoint(self) -> None:
+        flake_source = (ROOT / "flake.nix").read_text()
+        self.assertIn(
+            '"https://static.crates.io/crates/${crateName}/${crateName}-${crateVersion}.crate"',
+            flake_source,
+        )
+        self.assertIn(
+            "fetchurl = codexCrateFetcherFor pkgs;",
+            flake_source,
+        )
+        self.assertNotIn(
+            "cargoDeps = pkgs.rustPlatform.importCargoLock {",
+            flake_source,
+        )
+
     def test_codex_post_patch_inserts_exec_recursion_limit_idempotently(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
         patch_start = flake_source.index("codexRecursionLimitPatch = ''")
