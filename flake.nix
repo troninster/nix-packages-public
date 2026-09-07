@@ -13,7 +13,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     codex = {
-      url = "github:openai/codex/rust-v0.152.1";
+      url = "github:openai/codex/rust-v0.153.4";
       # Route codex's transitive rust-overlay input through our own (declared below) so a
       # single `nix flake update rust-overlay` refreshes both. Otherwise codex stays pinned
       # to whatever rust-overlay rev its upstream flake.lock happened to record, and the
@@ -110,13 +110,37 @@
         };
       });
     codexCargoOutputHashes = lib: {
+      "appcontainer_common-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
       "crossterm-0.29.0" = "sha256-cQxQQuV+YEutuQiPurXVISq6F/99vCEk8qe5PU8BCSo=";
+      "learning_mode_core-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
+      "learning_mode_windows-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
+      "mxc_config_contract-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
+      "mxc_telemetry-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
       "nucleo-0.5.0" = "sha256-Hm4SxtTSBrcWpXrtSqeO0TACbUxq3gizg1zD/6Yw/sI=";
       "nucleo-matcher-0.3.1" = "sha256-Hm4SxtTSBrcWpXrtSqeO0TACbUxq3gizg1zD/6Yw/sI=";
+      "process_security_environment_spec-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
       "runfiles-0.1.0" = "sha256-uJpVLcQh8wWZA3GPv9D8Nt43EOirajfDJ7eq/FB+tek=";
+      "sandbox_spec-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
       "tokio-tungstenite-0.28.0" = "sha256-V1xmnrfRWOcZZogelZEA4vvyMj2awCfHVA5/glQ6KAI=";
       "tungstenite-0.27.0" = "sha256-VVHhk7l9J/sEmG3q/UuV/sQ3f+fGsmq5vumSy8vbMvw=";
+      "wxc_common-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
     };
+    codexCrateFetcherFor = pkgs: args:
+      let
+        cratesIoMatch = builtins.match
+          "https://crates\\.io/api/v1/crates/([^/]+)/([^/]+)/download"
+          args.url;
+        crateName = builtins.elemAt cratesIoMatch 0;
+        crateVersion = builtins.elemAt cratesIoMatch 1;
+      in
+      pkgs.fetchurl (
+        args
+        // lib.optionalAttrs (cratesIoMatch != null) {
+          # Follow crates.io's canonical registry download endpoint instead of
+          # the legacy API redirect, which rejects GitHub-hosted Nix fetches.
+          url = "https://static.crates.io/crates/${crateName}/${crateName}-${crateVersion}.crate";
+        }
+      );
     codexCargoLock = builtins.fromTOML (builtins.readFile "${codex}/codex-rs/Cargo.lock");
     codexV8Versions = map
       (package: package.version)
@@ -175,7 +199,9 @@
       codex.packages.${system}.default.overrideAttrs (oldAttrs: {
         env = (oldAttrs.env or {}) // (codexBuildEnv pkgs);
         cargoBuildFlags = (oldAttrs.cargoBuildFlags or []) ++ codexBuildFlags;
-        cargoDeps = pkgs.rustPlatform.importCargoLock {
+        cargoDeps = (pkgs.rustPlatform.importCargoLock.override {
+          fetchurl = codexCrateFetcherFor pkgs;
+        }) {
           lockFile = "${codex}/codex-rs/Cargo.lock";
           outputHashes = codexCargoOutputHashes pkgs.lib;
         };
