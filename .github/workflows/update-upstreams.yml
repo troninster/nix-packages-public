@@ -144,7 +144,7 @@ jobs:
 
       - name: Check Codex packaging contracts
         if: ${{ steps.codex_update.outputs.changed == 'true' }}
-        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k CodexPackageContractTests -v
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k CodexPackageContractTests -k CodexCargoHashUpdaterTests -v
 
       - name: Build verified Codex update
         if: ${{ steps.codex_update.outputs.changed == 'true' }}
@@ -384,6 +384,14 @@ jobs:
         run: |
           set -euo pipefail
           while IFS= read -r package; do
+            case "$package" in
+              hermes-agent)
+                python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
+                ;;
+              camofox-browser)
+                python3 -m unittest discover -s tests -p test_update_upstreams.py -k ExternalPackageContractTests.test_camofox -v
+                ;;
+            esac
             NIX_BUILD_MONITOR=1 ./scripts/build-package "$package"
           done < .changed-packages
 

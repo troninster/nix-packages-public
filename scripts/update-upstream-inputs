@@ -954,9 +954,7 @@ esac
 # Recompute the final lock fingerprints from the now-current flake.lock for
 # the changed[] accounting below.
 codex_before="$(lock_fingerprint "$before_lock" codex)"
-hermes_before="$(lock_fingerprint "$before_lock" hermes-agent)"
 codex_after="$(lock_fingerprint "$PWD/flake.lock" codex)"
-hermes_after="$(lock_fingerprint "$PWD/flake.lock" hermes-agent)"
 
 changed=()
 codex_lock_changed=0
@@ -969,8 +967,13 @@ if [[ "$update_mode" != "without-codex" \
       || "$codex_lock_changed" == "1" ) ]]; then
   add_changed_package codex
 fi
-if [[ "$update_mode" != "codex-only" && "$hermes_before" != "$hermes_after" ]]; then
+# The remaining lane updates Hermes and its nested inputs. Any lock change in
+# a non-Codex-only run conservatively rebuilds Hermes and its Go-builder users,
+# including nested nixpkgs-only changes. Keep update-artifact's lock mapping in sync.
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_lock" "$PWD/flake.lock"; then
   add_changed_package hermes-agent
+  add_changed_package github-cli
+  add_changed_package supabase-cli
 fi
 if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_archon_package" "$archon_package_file"; then
   add_changed_package archon

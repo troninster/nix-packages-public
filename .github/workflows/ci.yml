@@ -65,6 +65,9 @@ jobs:
             ./scripts/detect-ci-packages --all
           fi
 
+      - name: Check update workflow contracts
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k UpdateUpstreamsWorkflowTests -k PackageDetectorTests -k UpdateArtifactTests -v
+
   flake-check:
     name: Flake check
     needs: detect-changes
@@ -164,7 +167,15 @@ jobs:
 
       - name: Check Codex packaging contracts
         if: ${{ matrix.package == 'codex' }}
-        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k CodexPackageContractTests -v
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k CodexPackageContractTests -k CodexCargoHashUpdaterTests -v
+
+      - name: Check Hermes packaging contracts
+        if: ${{ matrix.package == 'hermes-agent' }}
+        run: python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
+
+      - name: Check Camofox packaging contracts
+        if: ${{ matrix.package == 'camofox-browser' }}
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k ExternalPackageContractTests.test_camofox -v
 
       - name: Build package
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
