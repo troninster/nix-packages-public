@@ -350,6 +350,53 @@ declare -A block_status=([github_cli]=FAILED [camofox]=OK)
 
 
 class CodexPackageContractTests(unittest.TestCase):
+    def test_codex_recursion_patch_handles_mcp_removal_without_skipping_required_checks(self) -> None:
+        flake_source = (ROOT / "flake.nix").read_text()
+        marker = "codexRecursionLimitPatch = ''"
+        patch_start = flake_source.index(marker) + len(marker)
+        patch_end = flake_source.index("'';", patch_start)
+        helper = flake_source[patch_start:patch_end]
+        marker = 'postPatch = (oldAttrs.postPatch or "") + \'\''
+        patch_start = flake_source.index(marker) + len(marker)
+        patch_end = flake_source.index("'';", patch_start)
+        patch = flake_source[patch_start:patch_end].replace(
+            "${codexRecursionLimitPatch}", helper
+        )
+        attribute = '#![recursion_limit = "256"]\n'
+        cases = (
+            ("removed-mcp", {}, True),
+            ("retained-mcp", {"lib.rs": attribute, "main.rs": attribute}, True),
+            ("regressed-mcp", {"lib.rs": "", "main.rs": attribute}, False),
+            ("partial-mcp", {"lib.rs": attribute}, False),
+            ("missing-exec", {}, False),
+            ("missing-cli", {}, False),
+        )
+        for name, mcp_sources, succeeds in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                source = Path(temporary)
+                for crate, target in (("exec", "lib.rs"), ("cli", "main.rs")):
+                    if name != f"missing-{crate}":
+                        path = source / crate / "src" / target
+                        path.parent.mkdir(parents=True)
+                        path.write_text("// crate root\n")
+                for target, content in mcp_sources.items():
+                    path = source / "mcp-server" / "src" / target
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(content)
+                for _ in range(2 if succeeds else 1):
+                    result = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", patch],
+                        cwd=source,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                if succeeds:
+                    for target in ("exec/src/lib.rs", "cli/src/main.rs"):
+                        self.assertEqual(
+                            (source / target).read_text(), attribute + "// crate root\n"
+                        )
+
     def test_codex_registry_crates_use_the_official_static_download_endpoint(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
         self.assertIn(

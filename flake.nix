@@ -13,7 +13,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     codex = {
-      url = "github:openai/codex/rust-v0.153.4";
+      url = "github:openai/codex/rust-v0.154.0";
       # Route codex's transitive rust-overlay input through our own (declared below) so a
       # single `nix flake update rust-overlay` refreshes both. Otherwise codex stays pinned
       # to whatever rust-overlay rev its upstream flake.lock happened to record, and the
@@ -188,6 +188,13 @@
         test -x "$out/bin/codex-code-mode-host"
       '';
     codexRecursionLimitPatch = ''
+      # Codex 0.154 removed mcp-server. While it exists, require both upstream
+      # recursion attributes so a partial removal or regression still fails.
+      if [ -e mcp-server ]; then
+        grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/lib.rs
+        grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/main.rs
+      fi
+
       add_recursion_limit() {
         local target="$1"
         if ! grep -Fqx '#![recursion_limit = "256"]' "$target"; then
@@ -209,12 +216,9 @@
           lockFile = "${codex}/codex-rs/Cargo.lock";
           outputHashes = codexCargoOutputHashes pkgs.lib;
         };
-        # Keep the package fail-closed if a future pin drops the upstream MCP
-        # attributes, and carry the recursion-limit fix into exec and cli. The
-        # source root is codex-rs.
+        # Carry the recursion-limit fix into the required exec and cli crates.
+        # The source root is codex-rs.
         postPatch = (oldAttrs.postPatch or "") + ''
-          grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/lib.rs
-          grep -Fqx '#![recursion_limit = "256"]' mcp-server/src/main.rs
           ${codexRecursionLimitPatch}
         '';
         postInstall = codexPostInstall (oldAttrs.postInstall or "");
