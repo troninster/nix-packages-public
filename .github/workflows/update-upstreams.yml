@@ -142,6 +142,10 @@ jobs:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
 
+      - name: Check Codex packaging contracts
+        if: ${{ steps.codex_update.outputs.changed == 'true' }}
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k CodexPackageContractTests -v
+
       - name: Build verified Codex update
         if: ${{ steps.codex_update.outputs.changed == 'true' }}
         env:

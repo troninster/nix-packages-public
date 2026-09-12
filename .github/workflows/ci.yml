@@ -162,6 +162,10 @@ jobs:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
 
+      - name: Check Codex packaging contracts
+        if: ${{ matrix.package == 'codex' }}
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k CodexPackageContractTests -v
+
       - name: Build package
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
 
