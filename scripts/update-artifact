@@ -110,7 +110,8 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
     packages = set()
     for path in paths:
         if path == "flake.lock":
-            packages.add("hermes-agent")
+            # Match the remaining updater's conservative shared-builder rebuild.
+            packages.update(("hermes-agent", "github-cli", "supabase-cli"))
         elif path == "pkgs/archon/default.nix":
             packages.add("archon")
         elif path == "pkgs/camofox-browser/default.nix":

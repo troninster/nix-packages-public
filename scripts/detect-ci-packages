@@ -163,6 +163,9 @@ classify_lock_changes() {
 
   if [[ "$all_selected" != "true" ]] && lock_input_changed "hermes-agent"; then
     add_package "hermes-agent"
+    # Both packages borrow buildGo126Module from Hermes's pinned nixpkgs.
+    add_package "github-cli"
+    add_package "supabase-cli"
     matched="true"
   fi
 
@@ -220,6 +223,10 @@ classify_file() {
     scripts/ensure-hermes-registration-lifecycle | tests/test_hermes_registration_lifecycle.py)
       run_checks="true"
       add_package "hermes-agent"
+      ;;
+    scripts/patch-camofox-browser.py | scripts/repair-camofox-package-lock.py)
+      run_checks="true"
+      add_package "camofox-browser"
       ;;
     scripts/update-codex-cargo-hashes)
       run_checks="true"

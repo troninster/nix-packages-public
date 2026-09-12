@@ -43,6 +43,60 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         cls.updater = UPDATER.read_text()
         cls.detector = PACKAGE_DETECTOR.read_text()
 
+    def test_focused_contract_tests_gate_the_matching_builds(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        for workflow in (ci, self.workflow):
+            step = workflow_step(workflow, "Check Codex packaging contracts")
+            self.assertIn("-k CodexPackageContractTests", step)
+            self.assertIn("-k CodexCargoHashUpdaterTests", step)
+            self.assertNotIn("continue-on-error", step)
+        controls = workflow_step(ci, "Check update workflow contracts")
+        for suite in ("UpdateUpstreamsWorkflowTests", "PackageDetectorTests", "UpdateArtifactTests"):
+            self.assertIn(f"-k {suite}", controls)
+        remaining = workflow_step(self.workflow, "Build changed packages")
+        for package, label, command in (
+            ("hermes-agent", "Hermes", "python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v"),
+            ("camofox-browser", "Camofox", "python3 -m unittest discover -s tests -p test_update_upstreams.py -k ExternalPackageContractTests.test_camofox -v"),
+        ):
+            step = workflow_step(ci, f"Check {label} packaging contracts")
+            self.assertIn(f"matrix.package == '{package}'", step)
+            self.assertIn(command, step)
+            self.assertLess(ci.index(step), ci.index("      - name: Build package\n"))
+            case = remaining.split(f"{package})", 1)[1].split(";;", 1)[0]
+            self.assertIn(command, case)
+            self.assertLess(remaining.index(command), remaining.index("./scripts/build-package"))
+
+    def test_nested_hermes_lock_change_selects_shared_builder_consumers(self) -> None:
+        start = self.updater.index(
+            'if [[ "$update_mode" != "codex-only"', self.updater.index("changed=()")
+        )
+        selection = self.updater[start:self.updater.index("\nfi", start) + 3]
+        for mode, changed in (("without-codex", True), ("without-codex", False), ("codex-only", True)):
+            with self.subTest(mode=mode, changed=changed), tempfile.TemporaryDirectory() as temp:
+                repo = Path(temp)
+                lock = {"nodes": {
+                    "hermes-agent": {"locked": {"rev": "same"}, "inputs": {"nixpkgs": "hermes-nixpkgs"}},
+                    "hermes-nixpkgs": {"locked": {"rev": "before"}},
+                }}
+                before = repo / "before.lock"
+                before.write_text(json.dumps(lock))
+                if changed:
+                    lock["nodes"]["hermes-nixpkgs"]["locked"]["rev"] = "after"
+                (repo / "flake.lock").write_text(json.dumps(lock))
+                result = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", f"""
+update_mode={shlex.quote(mode)}
+before_lock={shlex.quote(str(before))}
+hermes_before=same
+hermes_after=same
+add_changed_package() {{ printf '%s\\n' "$1"; }}
+{selection}
+"""], cwd=repo, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = ["hermes-agent", "github-cli", "supabase-cli"] if changed and mode != "codex-only" else []
+                self.assertEqual(result.stdout.splitlines(), expected)
+
     def test_verified_codex_commit_precedes_unrelated_updates(self) -> None:
         codex_update = workflow_step(self.workflow, "Update Codex input")
         codex_build = workflow_step(self.workflow, "Build verified Codex update")
@@ -1297,6 +1351,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 
 class PackageDetectorTests(unittest.TestCase):
+    def test_camofox_helpers_and_nested_hermes_input_select_their_consumers(self) -> None:
+        before_lock = {"root": "root", "nodes": {
+            "root": {"inputs": {"hermes-agent": "hermes-agent"}},
+            "hermes-agent": {"locked": {"rev": "same"}, "inputs": {"nixpkgs": "hermes-nixpkgs"}},
+            "hermes-nixpkgs": {"locked": {"rev": "before"}},
+        }}
+        after_lock = json.loads(json.dumps(before_lock))
+        after_lock["nodes"]["hermes-nixpkgs"]["locked"]["rev"] = "after"
+        cases = (
+            ("scripts/patch-camofox-browser.py", "before", "after", ["camofox-browser"]),
+            ("scripts/repair-camofox-package-lock.py", "before", "after", ["camofox-browser"]),
+            ("flake.lock", json.dumps(before_lock), json.dumps(after_lock), ["hermes-agent", "github-cli", "supabase-cli"]),
+        )
+        for path, before, after, expected in cases:
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as temp:
+                repo = Path(temp)
+                def git(*args: str) -> str:
+                    return subprocess.run(
+                        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+                    ).stdout.strip()
+                git("init", "-q", "-b", "main")
+                git("config", "user.name", "Test")
+                git("config", "user.email", "test@example.com")
+                target = repo / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(before)
+                git("add", ".")
+                git("commit", "-q", "-m", "base")
+                base = git("rev-parse", "HEAD")
+                target.write_text(after)
+                git("add", ".")
+                git("commit", "-q", "-m", "candidate")
+                result = subprocess.run(
+                    [str(PACKAGE_DETECTOR), base, "HEAD"], cwd=repo, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+                self.assertEqual(json.loads(outputs["packages_json"]), expected)
+                self.assertEqual(outputs["run_checks"], "true")
+
     def test_codex_hash_updater_change_selects_only_codex(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
@@ -1509,6 +1603,26 @@ class UpdateArtifactTests(unittest.TestCase):
             self.git("diff", "--cached", "--name-only").stdout.strip(),
             "pkgs/archon/default.nix",
         )
+
+    def test_remaining_lock_requires_all_shared_builder_consumers(self) -> None:
+        (self.repo / "flake.lock").write_text('{"version": 2}\n')
+        packages = self.repo / ".changed-packages"
+        packages.write_text("hermes-agent\n")
+        create_args = (
+            "create", "--phase", "remaining", "--base-sha", self.base,
+            "--packages-file", ".changed-packages", "--artifact-dir", str(self.artifact),
+        )
+        rejected = self.tool(*create_args, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("metadata does not match patch paths", rejected.stderr)
+        packages.write_text("hermes-agent\ngithub-cli\nsupabase-cli\n")
+        self.tool(*create_args)
+        self.reset_candidate()
+        self.tool(
+            "verify-apply", "--phase", "remaining", "--base-sha", self.base,
+            "--artifact-dir", str(self.artifact),
+        )
+        self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "flake.lock")
 
     def test_create_rejects_path_outside_phase_allowlist(self) -> None:
         (self.repo / "flake.lock").write_text('{"version": 2}\n')
