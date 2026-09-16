@@ -10,17 +10,28 @@
 # Vendored upstream: pinned FreeLLMAPI source with no local source changes.
 buildNpmPackage rec {
   pname = "freellmapi";
-  version = "0.5.0";
+  version = "0.9.8";
 
   src = fetchFromGitHub {
     owner = "tashfeenahmed";
     repo = "freellmapi";
-    rev = "4ba015909289ebfef0c2d0a186b739669099023b";
-    hash = "sha256-slCdFD4yEV2EIEPk9WLg1z8C0ZQzuWKIHIBYAKwAqvI=";
+    rev = "83562ad360a65d80b6319297fee4cd47dc5a2ff3";
+    hash = "sha256-4wQo9nehW0RsEFnvdRkUTBNM7QNea6/UYw6uKbqScAg=";
   };
 
   nodejs = nodejs_22;
-  npmDepsHash = "sha256-NkawMnWujidvm1jXYyr5SQCa8Dr6oGpbBY1YnCMFJ+c=";
+  npmDepsHash = "sha256-8bgGKVICPmKAudvT9e3w/jJgwVnh9aV/sBu80AavN0g=";
+
+  # Upstream's root build now includes a CLI workspace. This package exposes
+  # the existing server/client runtime only, so keep those two builds explicit.
+  buildPhase = ''
+    runHook preBuild
+
+    npm run build:server
+    npm run build -w client
+
+    runHook postBuild
+  '';
 
   nativeBuildInputs = [ makeWrapper ];
 
@@ -31,7 +42,11 @@ buildNpmPackage rec {
 
     mkdir -p $out/lib/freellmapi/server $out/lib/freellmapi/client
     cp -r node_modules $out/lib/freellmapi/node_modules
-    cp -r server/dist server/package.json $out/lib/freellmapi/server/
+    # npm creates this workspace link for the omitted cli package; remove only
+    # that broken self-link after copying the server/client dependencies.
+    rm -f $out/lib/freellmapi/node_modules/freellmapi
+    test ! -e $out/lib/freellmapi/node_modules/freellmapi
+    cp -r server/dist server/package.json server/node_modules $out/lib/freellmapi/server/
     cp -r client/dist client/package.json $out/lib/freellmapi/client/
     cp -r shared $out/lib/freellmapi/shared
 
@@ -39,6 +54,17 @@ buildNpmPackage rec {
       --add-flags "$out/lib/freellmapi/server/dist/index.js"
 
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+
+    (cd $out/lib/freellmapi/server && \
+      ${nodejs_22}/bin/node --input-type=module --eval \
+        "await import('ajv/dist/2020.js')")
+
+    runHook postInstallCheck
   '';
 
   meta = {

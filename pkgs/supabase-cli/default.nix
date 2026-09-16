@@ -1,22 +1,24 @@
 {
   lib,
-  buildGo125Module,
+  buildGo126Module,
   fetchFromGitHub,
   ...
 }:
 
-buildGo125Module rec {
+buildGo126Module rec {
   pname = "supabase-cli";
-  version = "2.98.2";
+  version = "2.117.0";
 
   src = fetchFromGitHub {
     owner = "supabase";
     repo = "cli";
     rev = "v${version}";
-    hash = "sha256-ZiptplUqebmId7noXuVXu9G5y1SW8+FGV6WqPH8R3Cw=";
+    hash = "sha256-rO02dr43J44XVic9w8yAOfbk+Pbsft5NmoV4/H+ESMI=";
   };
 
-  vendorHash = "sha256-2BIP500MgABRzsG13UaUVv8KKtA0dPM0U10Uk/rfVQY=";
+  sourceRoot = "source/apps/cli-go";
+
+  vendorHash = "sha256-FHnldsmzOwO3Lz+2xrY/IUN9J+KG2zPDP+Rbwty9eYI=";
 
   subPackages = [ "." ];
 

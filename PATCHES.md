@@ -18,11 +18,15 @@ components record provenance the same way.
   upstream layout, then rewires the Hermes launchers to the derived environment.
   For upstream `v2026.8.13`, which imports the top-level
   `registration_lifecycle` module but omits it from the wheel metadata, the same
-  derived environment installs that exact source module.
+  derived environment installs that exact source module. Releases such as
+  `v2026.8.31` that declare and package the module keep the upstream-installed
+  implementation instead.
 - **Mechanism:** every textual substitution uses `substituteInPlace` with
   `--replace-fail`, so an upstream source drift that invalidates the expected
-  text fails the build loudly. The compatibility copy is conditional on the
-  exact upstream import, rejects an already-packaged module, and ends with an
+  text fails the build loudly. The registration helper requires the exact
+  upstream import, source module, and canonical packaging declaration. A
+  declared module must already exist in the built environment; an undeclared
+  module is copied only when absent. Contradictory layouts fail before the final
   import smoke test.
 - **Reason:** Telegram's Bot API permits 100 commands per scope. The lower
   Hermes cap hid later plugin commands such as `/note` from the menu. The
@@ -43,10 +47,15 @@ components record provenance the same way.
   keeps idle shutdown idempotent on affected upstream versions; and makes
   active health probes skip idle browsers, avoid overlap, and reset state after
   relaunch.
-- **Mechanism:** the changes are declarative `substituteInPlace`
-  transformations with `--replace-fail`. The version-sensitive idle-shutdown
-  change first detects an already-fixed upstream and otherwise applies the
-  fail-loud substitution.
+- **Mechanism:** `scripts/patch-camofox-browser.py` performs a two-phase
+  compatibility pass over the engine-path, default-addon, session-grace,
+  request-timeout, idle-shutdown, launch-state, and active-health-probe changes.
+  It first classifies all exact supported legacy and native layouts, reports
+  every unknown or duplicate anchor without changing either source file, then
+  repeats the exact-count guards, stages both outputs, and replaces each source
+  file individually. Preflight failures happen before any source write. Native
+  behavior is preserved where upstream already implements it; unknown layouts
+  stop the build.
 - **Reason:** these adaptations make the pinned browser run reproducibly from
   the immutable Nix store and avoid observed cold-start, cleanup, and health
   probe races on NixOS.

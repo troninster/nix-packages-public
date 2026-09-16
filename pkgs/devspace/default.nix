@@ -18,16 +18,16 @@ let
 in
 buildNpmPackageNode22 rec {
   pname = "devspace";
-  version = "1.0.7";
+  version = "1.0.8";
 
   src = fetchFromGitHub {
     owner = "Waishnav";
     repo = "devspace";
-    rev = "b5b4ab62a8718e1186aef815538741d9402f92ba";
-    hash = "sha256-SRcPaJF/0sTWhBCvkDNc2zYL42ItSISbA9pEBquUXc8=";
+    rev = "fe712e2b6c07231d2a76503bf2a674b165850616";
+    hash = "sha256-KPUsh8fgkNOmZjgw/kvM/d7fkv+Tq4VnP7/Orv/A8W8=";
   };
 
-  npmDepsHash = "sha256-fwrnMPIfjDNxFe4jcbKkh3TNgkqfYzyAJRVSqunZ7dg=";
+  npmDepsHash = "sha256-gByAC2rpV0y9sFUClpYEzL19GtWho+htgD5xxsipLOc=";
   # npm 11 compacts cache indexes while reading them. The fixed-output Nix
   # cache is immutable, so give npm a build-local writable copy.
   makeCacheWritable = true;

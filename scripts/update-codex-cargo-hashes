@@ -149,7 +149,15 @@ def representative_dependencies(
 
 def prefetch_hash(url: str, rev: str) -> str:
     result = subprocess.run(
-        ["nix-prefetch-git", "--quiet", "--url", url, "--rev", rev],
+        [
+            "nix-prefetch-git",
+            "--quiet",
+            "--fetch-submodules",
+            "--url",
+            url,
+            "--rev",
+            rev,
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -269,7 +277,8 @@ def main() -> None:
     args = parser.parse_args()
 
     packages = cargo_packages(args.lock_file)
-    dependencies = representative_dependencies(git_dependencies(packages, args.lock_file))
+    dependencies_by_key = git_dependencies(packages, args.lock_file)
+    representatives = representative_dependencies(dependencies_by_key)
     version = v8_version(packages, args.lock_file)
 
     try:
@@ -283,7 +292,13 @@ def main() -> None:
     render_v8_hash(source, args.flake_file, V8_ARCHIVE_RE, "archive")
     render_v8_hash(source, args.flake_file, V8_BINDING_RE, "binding")
 
-    hashes = [(key, prefetch_hash(url, rev)) for key, url, rev in dependencies]
+    hashes_by_revision = {
+        rev: prefetch_hash(url, rev) for _key, url, rev in representatives
+    }
+    hashes = [
+        (key, hashes_by_revision[rev])
+        for key, (_url, rev) in sorted(dependencies_by_key.items())
+    ]
     archive_hash = prefetch_v8_artifact(v8_archive_url(version), "archive")
     binding_hash = prefetch_v8_artifact(v8_binding_url(version), "binding")
 
