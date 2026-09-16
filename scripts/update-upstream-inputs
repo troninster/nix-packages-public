@@ -13,14 +13,17 @@ case "$#" in
       --without-codex)
         update_mode="without-codex"
         ;;
+      --github-cli-only)
+        update_mode="github-cli-only"
+        ;;
       *)
-        echo "usage: $0 [--codex-only|--without-codex]" >&2
+        echo "usage: $0 [--codex-only|--without-codex|--github-cli-only]" >&2
         exit 2
         ;;
     esac
     ;;
   *)
-    echo "usage: $0 [--codex-only|--without-codex]" >&2
+    echo "usage: $0 [--codex-only|--without-codex|--github-cli-only]" >&2
     exit 2
     ;;
 esac
@@ -937,13 +940,17 @@ case "$update_mode" in
       fi
     done
     ;;
+  github-cli-only)
+    run_block github_cli        block_github_cli        "$github_cli_package_file"
+    ;;
   without-codex)
+    # Scheduled remaining lane: GitHub CLI releases have their own transaction,
+    # build and publisher after this lane, just as Codex does before it.
     run_block archon            block_archon            "$archon_package_file"
     run_block camofox           block_camofox           "$camofox_package_file"
     run_block symphony_ts       block_symphony_ts       "$symphony_ts_package_file"
     run_block devspace          block_devspace          "$devspace_package_file"
     run_block freellmapi        block_freellmapi        "$freellmapi_package_file"
-    run_block github_cli        block_github_cli        "$github_cli_package_file"
     run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
     run_block omp               block_omp               "$omp_package_file"
     run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file"

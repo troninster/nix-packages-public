@@ -34,6 +34,20 @@ update only after every changed package in that lane passes. The commit message
 includes `[skip ci]` so the regular CI workflow does not rebuild packages after
 the targeted update.
 
+GitHub CLI release discovery, dependency-hash generation, build and publication
+run in a separate lane after the remaining publisher. `--without-codex` is the
+scheduled remaining lane and also excludes GitHub CLI release discovery;
+`--github-cli-only` updates only `pkgs/github-cli/default.nix`. A failed GitHub
+CLI candidate is rolled back and its job stays red, but earlier verified
+Codex/remaining updates are already published. No failed candidate is accepted
+and the publisher cannot change `flake.lock` or another package. The manual
+no-argument updater still checks all packages and fails on any block failure.
+
+Shared dependencies are not bypassed: changes to the Hermes-provided Go builder
+still rebuild pinned GitHub CLI and Supabase alongside Hermes in the remaining
+lane. A failure in that shared closure must block that closure's publication.
+This isolation does not automatically repair unsupported new upstream layouts.
+
 Codex updates can still require manual maintenance when upstream Rust
 dependency hashes or the prebuilt `rusty_v8` archive version changes. The
 `codexCargoOutputHashes` keys in `flake.nix` must match the git-sourced package

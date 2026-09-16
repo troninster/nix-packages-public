@@ -130,6 +130,10 @@ patches are applied during the package build, so upstream drift fails in the
 targeted build instead of silently dropping patches. The workflow commit uses
 `[skip ci]`, so the regular CI workflow is not repeated after a successful
 targeted update build.
+GitHub CLI release updates have their own fail-closed lane after the remaining
+packages: a new `gh` dependency/hash/build failure cannot suppress already
+verified updates to other packages. Shared-builder checks remain mandatory; see
+`docs/package-updates.md` for the transaction boundaries.
 Oh My Pi is intentionally updated through a reviewed fixed-hash package change,
 not by this scheduled workflow.
 

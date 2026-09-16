@@ -16,6 +16,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PHASE_PACKAGES = {
     "codex": {"codex"},
+    "github-cli": {"github-cli"},
     "remaining": {
         "archon",
         "camofox-browser",
@@ -31,13 +32,13 @@ PHASE_PACKAGES = {
 }
 PHASE_PATHS = {
     "codex": ("flake.nix", "flake.lock"),
+    "github-cli": ("pkgs/github-cli/default.nix",),
     "remaining": (
         "flake.lock",
         "pkgs/archon/default.nix",
         "pkgs/camofox-browser/default.nix",
         "pkgs/devspace/default.nix",
         "pkgs/freellmapi/default.nix",
-        "pkgs/github-cli/default.nix",
         "pkgs/notion-cli/default.nix",
         "pkgs/omp/default.nix",
         "pkgs/symphony-ts/default.nix",
