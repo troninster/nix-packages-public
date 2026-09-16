@@ -191,11 +191,32 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
             "easimon/maximize-build-space": "fc881a613ad2a34aca9c9624518214ebc21dfc0c",
             "cachix/install-nix-action": "630ae543ea3a38a9a4166f03376c02c50f408342",
             "cachix/cachix-action": "5f2d7c5294214f71b873db4b969586b980625e71",
-            "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
-            "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         }
         for action, sha in expected.items():
             self.assertIn(f"uses: {action}@{sha}", self.workflow)
+
+    def test_dependabot_builds_without_cache_publication_and_smokes_artifact_pair(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn(
+            "CACHIX_AUTH_TOKEN: ${{ github.event.pull_request.user.login != 'dependabot[bot]' && secrets.CACHIX_AUTH_TOKEN || '' }}",
+            ci,
+        )
+        self.assertIn(
+            "REQUIRE_CACHIX_PUSH: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && '0' || '1' }}",
+            ci,
+        )
+        self.assertIn('run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"', ci)
+        for direction in ("Upload", "Download"):
+            smoke = workflow_step(ci, f"{direction} artifact transport smoke")
+            production = workflow_step(self.workflow, f"{direction} Codex publication artifact")
+            self.assertEqual(
+                re.search(r"uses: (\S+)", smoke).group(1),
+                re.search(r"uses: (\S+)", production).group(1),
+            )
+            self.assertNotIn("continue-on-error", smoke)
+        self.assertIn("run: cmp ", workflow_step(ci, "Verify artifact transport smoke"))
 
     def test_publish_jobs_revalidate_artifact_and_base_before_push(self) -> None:
         for job_name in ("publish-codex", "publish-remaining"):

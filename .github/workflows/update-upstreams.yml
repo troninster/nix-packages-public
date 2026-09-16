@@ -165,7 +165,7 @@ jobs:
 
       - name: Upload Codex publication artifact
         if: ${{ steps.codex_update.outputs.changed == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-update-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/codex-update
@@ -192,7 +192,7 @@ jobs:
           fetch-depth: 1
 
       - name: Download Codex publication artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-update-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/codex-update
@@ -406,7 +406,7 @@ jobs:
 
       - name: Upload remaining publication artifact
         if: ${{ steps.update.outputs.changed == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: remaining-update-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/remaining-update
@@ -433,7 +433,7 @@ jobs:
           fetch-depth: 1
 
       - name: Download remaining publication artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: remaining-update-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/remaining-update
