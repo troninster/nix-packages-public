@@ -130,11 +130,11 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
         prepare_remaining = workflow_job(self.workflow, "prepare-remaining")
         publish_remaining = workflow_job(self.workflow, "publish-remaining")
 
-        for job in (prepare_codex, prepare_remaining):
+        for job in (prepare_codex, prepare_remaining, workflow_job(self.workflow, "prepare-github-cli")):
             self.assertIn("permissions:\n      contents: read", job)
             self.assertIn("persist-credentials: false", job)
             self.assertNotIn("git push", job)
-        for job in (publish_codex, publish_remaining):
+        for job in (publish_codex, publish_remaining, workflow_job(self.workflow, "publish-github-cli")):
             self.assertIn("permissions:\n      contents: write", job)
             self.assertIn("update-artifact verify-apply", job)
             self.assertIn("git push origin HEAD:refs/heads/main", job)
@@ -142,7 +142,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
             self.assertNotIn("CACHIX_AUTH_TOKEN", job)
 
     def test_secrets_are_scoped_to_the_steps_that_need_them(self) -> None:
-        self.assertEqual(self.workflow.count("secrets.CACHIX_AUTH_TOKEN"), 6)
+        self.assertEqual(self.workflow.count("secrets.CACHIX_AUTH_TOKEN"), 9)
         for step_name in ("Detect Cachix configuration", "Configure Cachix"):
             for step in re.findall(
                 rf"      - name: {step_name}\n.*?(?=\n      - name: |\n  [a-z0-9-]+:|\Z)",
@@ -150,7 +150,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
                 re.DOTALL,
             ):
                 self.assertIn("secrets.CACHIX_AUTH_TOKEN", step)
-        for step_name in ("Build verified Codex update", "Build changed packages"):
+        for step_name in ("Build verified Codex update", "Build changed packages", "Build verified GitHub CLI update"):
             step = workflow_step(self.workflow, step_name)
             self.assertIn("secrets.CACHIX_AUTH_TOKEN", step)
             self.assertIn("REQUIRE_CACHIX_PUSH: 1", step)
@@ -219,7 +219,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
         self.assertIn("run: cmp ", workflow_step(ci, "Verify artifact transport smoke"))
 
     def test_publish_jobs_revalidate_artifact_and_base_before_push(self) -> None:
-        for job_name in ("publish-codex", "publish-remaining"):
+        for job_name in ("publish-codex", "publish-remaining", "publish-github-cli"):
             job = workflow_job(self.workflow, job_name)
             self.assertIn("git ls-remote origin refs/heads/main", job)
             self.assertGreaterEqual(job.count('"$remote_sha" != "$EXPECTED_BASE_SHA"'), 2)
@@ -250,6 +250,66 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
         remaining_block = self.updater[remaining_mode:remaining_end]
         self.assertIn("block_camofox", remaining_block)
         self.assertNotIn("run_block codex_ref", remaining_block)
+        self.assertNotIn("run_block github_cli", remaining_block)
+
+    def test_github_cli_failure_cannot_gate_earlier_publications(self) -> None:
+        prepare = workflow_job(self.workflow, "prepare-github-cli")
+        publish = workflow_job(self.workflow, "publish-github-cli")
+        self.assertIn("- publish-remaining", prepare)
+        self.assertIn("needs.prepare-remaining.result == 'failure'", prepare)
+        self.assertIn("needs.publish-remaining.result == 'success'", prepare)
+        self.assertIn("needs.publish-remaining.result == 'skipped'", prepare)
+        self.assertNotIn("needs.publish-remaining.result == 'failure'", prepare)
+        self.assertIn("--github-cli-only", prepare)
+        self.assertIn("--phase github-cli", prepare)
+        self.assertIn("--phase github-cli", publish)
+        self.assertIn("needs.prepare-github-cli.result == 'success'", publish)
+        self.assertIn("needs.prepare-github-cli.outputs.changed == 'true'", publish)
+        self.assertNotIn("continue-on-error", prepare)
+        for lane in ("prepare-codex", "publish-codex", "prepare-remaining", "publish-remaining"):
+            self.assertNotIn("needs.prepare-github-cli", workflow_job(self.workflow, lane))
+        self.assertLess(self.workflow.index("  publish-remaining:"), self.workflow.index("  prepare-github-cli:"))
+
+    def test_github_cli_dependency_failure_is_isolated_and_rolled_back(self) -> None:
+        selection = self.updater.index(
+            'case "$update_mode" in', self.updater.index("block_symphony_ts()")
+        )
+        blocks = re.findall(r"^block_([a-z_]+)\(\)", self.updater, re.MULTILINE)
+        stubs = "\n".join(f"block_{name}() {{ return 0; }}" for name in blocks)
+        stubs += '''
+lock_fingerprint() { printf 'unchanged'; }
+block_archon() { printf 'updated\\n' > "$archon_package_file"; }
+block_github_cli() {
+  printf 'broken-new-dependencies\\n' > "$github_cli_package_file"
+  return 1
+}
+'''
+        script = self.updater[:selection] + stubs + "\n" + self.updater[selection:]
+        for mode in ("--without-codex", "--github-cli-only"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                repo = Path(temp)
+                for name in re.findall(r'^\w+_package_file="([^"]+)"', self.updater, re.MULTILINE):
+                    path = repo / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("original\n")
+                (repo / "flake.lock").write_text("original\n")
+                output = repo / "outputs"
+                result = subprocess.run(
+                    ["bash", "-c", script, "updater-fixture", mode], cwd=repo,
+                    env={**os.environ, "GITHUB_OUTPUT": str(output), "UPDATE_PACKAGES_FILE": ".changed-packages"},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual((repo / "pkgs/github-cli/default.nix").read_text(), "original\n")
+                self.assertEqual((repo / "flake.lock").read_text(), "original\n")
+                if mode == "--without-codex":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((repo / ".changed-packages").read_text(), "archon\n")
+                    self.assertIn("changed=true", output.read_text())
+                else:
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("required upstream update blocks failed: github_cli", result.stderr)
+                    self.assertFalse((repo / ".changed-packages").exists())
+                    self.assertFalse(output.exists())
 
     def test_remaining_lane_covers_external_packages_only(self) -> None:
         expected_blocks = (
@@ -331,7 +391,7 @@ test ! -e {shlex.quote(str(changed))}
         result = subprocess.run(
             ["bash", "-c", f"""
 set -euo pipefail
-update_mode=without-codex
+update_mode=github-cli-only
 declare -A block_status=([github_cli]=FAILED [camofox]=OK)
 {guard}
 """],
@@ -1644,6 +1704,35 @@ class UpdateArtifactTests(unittest.TestCase):
             "--artifact-dir", str(self.artifact),
         )
         self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "flake.lock")
+
+    def test_github_cli_artifact_is_a_separate_one_file_transaction(self) -> None:
+        package = self.repo / "pkgs/github-cli/default.nix"
+        package.parent.mkdir(parents=True)
+        package.write_text("version = old;\n")
+        self.git("add", "pkgs/github-cli/default.nix")
+        self.git("commit", "-q", "-m", "github-cli base")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        package.write_text("version = new;\n")
+        (self.repo / ".changed-packages").write_text("github-cli\n")
+        args = (
+            "--base-sha", self.base, "--packages-file", ".changed-packages",
+            "--artifact-dir", str(self.artifact),
+        )
+        rejected = self.tool("create", "--phase", "remaining", *args, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("unexpected paths", rejected.stderr)
+        (self.repo / "flake.lock").write_text('{"version": 2}\n')
+        rejected = self.tool("create", "--phase", "github-cli", *args, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("unexpected paths", rejected.stderr)
+        (self.repo / "flake.lock").write_text('{"version": 1}\n')
+        self.tool("create", "--phase", "github-cli", *args)
+        self.reset_candidate()
+        self.tool(
+            "verify-apply", "--phase", "github-cli", "--base-sha", self.base,
+            "--artifact-dir", str(self.artifact),
+        )
+        self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "pkgs/github-cli/default.nix")
 
     def test_create_rejects_path_outside_phase_allowlist(self) -> None:
         (self.repo / "flake.lock").write_text('{"version": 2}\n')
