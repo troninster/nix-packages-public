@@ -53,18 +53,7 @@
         targets = [ "wasm32-wasip2" ];
       };
     githubCliGoModuleFor = system:
-      let
-        goPkgs = hermes-agent.inputs.nixpkgs.legacyPackages.${system};
-        # This input still has 1.27rc2. Pin the released compiler required by
-        # GitHub CLI without moving Hermes's entire dependency graph.
-        go = goPkgs.go_1_27.overrideAttrs (old: rec {
-          version = "1.27.1";
-          src = goPkgs.fetchurl {
-            url = "https://go.dev/dl/go${version}.src.tar.gz";
-            hash = "sha256-TkCKuuEm2Ra2FkYnGT8sVPDjyhMS1pO4bbRfhiqyOLE=";
-          };
-        });
-      in goPkgs.buildGo127Module.override { inherit go; };
+      import ./pkgs/github-cli/toolchain.nix { inherit system; };
     pkgsFor = system: import nixpkgs {
       inherit system;
       config.allowUnfree = true;
@@ -74,7 +63,7 @@
           # The pinned Hermes nixpkgs input supplies a released Go 1.26 builder;
           # Codex release locks can still point at pre-release Go toolchains.
           buildGo126Module = hermes-agent.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module;
-          buildGo127Module = githubCliGoModuleFor system;
+          githubCliGoModule = githubCliGoModuleFor system;
         })
       ];
     };
@@ -270,7 +259,7 @@
       in
       (localPackagesFor final {
         inherit rustToolchain;
-        buildGo127Module = githubCliGoModuleFor system;
+        githubCliGoModule = githubCliGoModuleFor system;
       }) // {
         codex = codexPackage;
         hermes-agent = hermesAgentPackage;

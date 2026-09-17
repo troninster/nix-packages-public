@@ -37,26 +37,34 @@ the targeted update.
 GitHub CLI release discovery, dependency-hash generation, build and publication
 run in a separate lane after the remaining publisher. `--without-codex` is the
 scheduled remaining lane and also excludes GitHub CLI release discovery;
-`--github-cli-only` updates only `pkgs/github-cli/default.nix`. A failed GitHub
+`--github-cli-only` updates `pkgs/github-cli/default.nix` and its data-only
+`toolchain.json` pin. A failed GitHub
 CLI candidate is rolled back and its job stays red, but earlier verified
 Codex/remaining updates are already published. No failed candidate is accepted
 and the publisher cannot change `flake.lock` or another package. The manual
 no-argument updater still checks all packages and fails on any block failure.
 
-Shared dependencies are not bypassed: changes to the Hermes-provided Go builder
-still rebuild pinned GitHub CLI and Supabase alongside Hermes in the remaining
-lane. A failure in that shared closure must block that closure's publication.
-This isolation does not automatically repair unsupported new upstream layouts.
+GitHub CLI owns an independently pinned Nixpkgs toolchain snapshot. Each poll
+checks both the release and `nixos-unstable`, selects the newest stable Go in
+that snapshot satisfying the candidate's `go` and `toolchain` requirements,
+and pins the snapshot commit/hash plus the selected Go attribute/version.
+Go and its transitive build dependencies can update even without a new `gh`
+release; the updater never downgrades the compiler or selects a prerelease.
+An unchanged compatible snapshot is a no-op. The package and overlay use the
+same pinned builder; no mutable toolchain download occurs during compilation.
 
-GitHub CLI `2.101.0` requires Go `1.27.0` or newer. Its builder uses the
-Hermes input's Go 1.27 derivation with the official Go `1.27.1` source/hash
-pinned explicitly: that input still carries `1.27rc2`. This avoids updating
-Hermes's whole dependency graph; Supabase stays on Go 1.26. Both flake package
-and overlay exports select the same GitHub CLI builder. Dependency discovery
-reports the concrete `go.mod`/compiler version mismatch when present, restores
-the prior hash and fails closed. The package install check executes the built
-CLI and verifies its version; later unsupported Go requirements still need a
-reviewed compiler update, not an automatic toolchain download inside the build.
+The source and vendor hashes are regenerated after a release or toolchain
+change. Library versions remain those in upstream `go.mod`/`go.sum`, not
+arbitrary `go get -u` upgrades. Both candidate files are restored on discovery
+failure, and full build, CLI install check and cache publication still gate
+the writer. If Nixpkgs has no compatible stable Go yet, that lane fails safely
+and retries on a later poll; unsupported source/build-layout changes are not
+automatically rewritten.
+
+Shared dependencies are not bypassed: Hermes-provided Go-builder changes still
+rebuild Supabase alongside Hermes. GitHub CLI no longer consumes that builder,
+so its toolchain snapshot changes select only GitHub CLI. A failure in a
+shared closure still blocks that closure's publication.
 
 Codex updates can still require manual maintenance when upstream Rust
 dependency hashes or the prebuilt `rusty_v8` archive version changes. The

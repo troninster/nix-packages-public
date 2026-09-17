@@ -67,7 +67,7 @@ jobs:
           fi
 
       - name: Check update workflow contracts
-        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k UpdateUpstreamsWorkflowTests -k PackageDetectorTests -k UpdateArtifactTests -v
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k UpdateUpstreamsWorkflowTests -k PackageDetectorTests -k UpdateArtifactTests -k GitHubCliToolchainTests -v
 
       - name: Prepare artifact transport smoke
         run: |

@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Pin a released Go toolchain and its Nix build dependencies for GitHub CLI."""
+
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+
+
+def version(value):
+    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", value):
+        raise ValueError(f"unsupported Go version: {value}")
+    parts = tuple(map(int, value.split(".")))
+    return parts if len(parts) == 3 else (*parts, 0)
+
+
+def required_version(go_mod):
+    requirements = []
+    seen = set()
+    for line in go_mod.splitlines():
+        fields = line.split("//", 1)[0].split()
+        if not fields or fields[0] not in ("go", "toolchain"):
+            continue
+        directive = fields[0]
+        if len(fields) != 2 or directive in seen:
+            raise ValueError(f"invalid or duplicate {directive} directive")
+        seen.add(directive)
+        value = fields[1]
+        if directive == "toolchain":
+            if value == "default":
+                continue
+            if not value.startswith("go"):
+                raise ValueError("unsupported toolchain directive")
+            value = value[2:]
+        requirements.append(version(value))
+    if "go" not in seen:
+        raise ValueError("GitHub CLI source has no explicit Go requirement")
+    return max(requirements)
+
+
+def select_toolchain(candidates, minimum):
+    compatible = []
+    for candidate in candidates:
+        name, release = candidate["attribute"], candidate["version"]
+        if not re.fullmatch(r"go_[0-9]+_[0-9]+", name):
+            raise ValueError("invalid Go attribute from Nixpkgs")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", release):
+            continue  # Never select development, beta or release-candidate Go.
+        parsed = version(release)
+        if name != f"go_{parsed[0]}_{parsed[1]}":
+            raise ValueError("Go attribute/version mismatch in Nixpkgs")
+        if parsed >= minimum:
+            compatible.append((parsed, name, release))
+    if not compatible:
+        required = ".".join(map(str, minimum))
+        raise ValueError(f"Nixpkgs has no stable Go >= {required}; keeping the previous candidate")
+    _, name, release = max(compatible)
+    return name, release
+
+
+def run(args):
+    return subprocess.check_output(args, text=True).strip()
+
+
+def candidate_pin(source, current):
+    minimum = max(required_version((source / "go.mod").read_text()), version(current["go_version"]))
+    revision = run([
+        "git", "ls-remote", "--exit-code", "https://github.com/NixOS/nixpkgs.git",
+        "refs/heads/nixos-unstable",
+    ]).split()[0]
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("Nixpkgs did not resolve to a full commit SHA")
+    if revision == current["nixpkgs_rev"] and version(current["go_version"]) >= minimum:
+        return current
+    fetched = json.loads(run([
+        "nix", "store", "prefetch-file", "--json", "--unpack",
+        f"https://github.com/NixOS/nixpkgs/archive/{revision}.tar.gz",
+    ]))
+    if not re.fullmatch(r"sha256-[A-Za-z0-9+/]{43}=", fetched["hash"]):
+        raise ValueError("invalid Nixpkgs source hash")
+    source_path = json.dumps(fetched["storePath"])
+    candidates = json.loads(run([
+        "nix", "eval", "--impure", "--json", "--expr", f'''
+        let
+          pkgs = import (builtins.toPath {source_path}) {{ system = "x86_64-linux"; }};
+          names = builtins.filter
+            (name: builtins.match "go_[0-9]+_[0-9]+" name != null)
+            (builtins.attrNames pkgs);
+          inspect = name:
+            let result = builtins.tryEval pkgs.${{name}}.version;
+            in {{ attribute = name; version = if result.success then result.value else "unavailable"; }};
+        in map inspect names
+        ''',
+    ]))
+    name, release = select_toolchain(candidates, minimum)
+    return {
+        "nixpkgs_rev": revision,
+        "nixpkgs_hash": fetched["hash"],
+        "go_attr": name,
+        "go_version": release,
+    }
+
+
+def update(source, pin_file):
+    current = json.loads(pin_file.read_text())
+    candidate = candidate_pin(source, current)
+    if candidate == current:
+        return False
+    # All discovery/validation precedes the write. The caller's transaction
+    # restores this file together with default.nix if vendor discovery fails.
+    pin_file.write_text(json.dumps(candidate, indent=2) + "\n")
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--pin-file", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        print("true" if update(args.source, args.pin_file) else "false")
+    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+        parser.exit(1, f"update-github-cli-toolchain: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

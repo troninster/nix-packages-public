@@ -22,7 +22,6 @@ PHASE_PACKAGES = {
         "camofox-browser",
         "devspace",
         "freellmapi",
-        "github-cli",
         "hermes-agent",
         "notion-cli",
         "omp",
@@ -32,7 +31,7 @@ PHASE_PACKAGES = {
 }
 PHASE_PATHS = {
     "codex": ("flake.nix", "flake.lock"),
-    "github-cli": ("pkgs/github-cli/default.nix",),
+    "github-cli": ("pkgs/github-cli/default.nix", "pkgs/github-cli/toolchain.json"),
     "remaining": (
         "flake.lock",
         "pkgs/archon/default.nix",
@@ -112,7 +111,7 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
     for path in paths:
         if path == "flake.lock":
             # Match the remaining updater's conservative shared-builder rebuild.
-            packages.update(("hermes-agent", "github-cli", "supabase-cli"))
+            packages.update(("hermes-agent", "supabase-cli"))
         elif path == "pkgs/archon/default.nix":
             packages.add("archon")
         elif path == "pkgs/camofox-browser/default.nix":
@@ -121,7 +120,7 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
             packages.add("devspace")
         elif path == "pkgs/freellmapi/default.nix":
             packages.add("freellmapi")
-        elif path == "pkgs/github-cli/default.nix":
+        elif path in ("pkgs/github-cli/default.nix", "pkgs/github-cli/toolchain.json"):
             packages.add("github-cli")
         elif path == "pkgs/notion-cli/default.nix":
             packages.add("notion-cli")
