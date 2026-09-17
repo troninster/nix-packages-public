@@ -16,7 +16,7 @@ buildGo127Module rec {
     hash = "sha256-EoKF2m5sZP+uQ5AVOKkFqSCACfkeUc7vnH8PHWCO6FE=";
   };
 
-  vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  vendorHash = "sha256-4KYQBgMNc/sI0mbcXSfJ7A/77VAS6NM8TOzQ3w7AlK8=";
 
   subPackages = [ "cmd/gh" ];
 
@@ -28,6 +28,13 @@ buildGo127Module rec {
   ];
 
   doCheck = false;
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    "$out/bin/gh" --version | grep -F "gh version ${version} "
+    runHook postInstallCheck
+  '';
 
   meta = {
     description = "GitHub command line tool";

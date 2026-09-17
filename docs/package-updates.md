@@ -48,6 +48,16 @@ still rebuild pinned GitHub CLI and Supabase alongside Hermes in the remaining
 lane. A failure in that shared closure must block that closure's publication.
 This isolation does not automatically repair unsupported new upstream layouts.
 
+GitHub CLI `2.101.0` requires Go `1.27.0` or newer. Its builder uses the
+Hermes input's Go 1.27 derivation with the official Go `1.27.1` source/hash
+pinned explicitly: that input still carries `1.27rc2`. This avoids updating
+Hermes's whole dependency graph; Supabase stays on Go 1.26. Both flake package
+and overlay exports select the same GitHub CLI builder. Dependency discovery
+reports the concrete `go.mod`/compiler version mismatch when present, restores
+the prior hash and fails closed. The package install check executes the built
+CLI and verifies its version; later unsupported Go requirements still need a
+reviewed compiler update, not an automatic toolchain download inside the build.
+
 Codex updates can still require manual maintenance when upstream Rust
 dependency hashes or the prebuilt `rusty_v8` archive version changes. The
 `codexCargoOutputHashes` keys in `flake.nix` must match the git-sourced package
