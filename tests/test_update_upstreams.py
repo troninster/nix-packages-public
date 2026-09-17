@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -36,6 +37,70 @@ def workflow_job(source: str, name: str) -> str:
     return source[start:end]
 
 
+class GitHubCliToolchainTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.helper = runpy.run_path(str(ROOT / "scripts/update-github-cli-toolchain"))
+
+    def test_go_and_toolchain_requirements_are_respected(self):
+        required = self.helper["required_version"]
+        self.assertEqual(required("module gh\ngo 1.27 // minimum\ntoolchain go1.28.1\n"), (1, 28, 1))
+        self.assertEqual(required("go 1.27.2\ntoolchain default\n"), (1, 27, 2))
+        for source in ("module gh\n", "go 1.28rc1\n", "go 1.27\ngo 1.28\n"):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                required(source)
+
+    def test_selection_crosses_minor_versions_but_never_selects_prereleases(self):
+        candidates = [
+            {"attribute": "go_1_27", "version": "1.27.2"},
+            {"attribute": "go_1_28", "version": "1.28.1"},
+            {"attribute": "go_1_29", "version": "1.29rc2"},
+        ]
+        select = self.helper["select_toolchain"]
+        self.assertEqual(select(candidates, (1, 27, 0)), ("go_1_28", "1.28.1"))
+        self.assertEqual(select(candidates, (1, 28, 1)), ("go_1_28", "1.28.1"))
+        with self.assertRaisesRegex(ValueError, "no stable Go"):
+            select(candidates, (1, 29, 0))
+
+    def test_discovery_pins_source_and_toolchain_without_downgrading(self):
+        candidate_pin = self.helper["candidate_pin"]
+        revision = "a" * 40
+        source_hash = "sha256-" + "A" * 43 + "="
+        answers = [
+            revision + "\trefs/heads/nixos-unstable",
+            json.dumps({"hash": source_hash, "storePath": "/nix/store/toolchain-source"}),
+            json.dumps([{"attribute": "go_1_28", "version": "1.28.1"}]),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp)
+            (source / "go.mod").write_text("go 1.27.0\ntoolchain go1.28.1\n")
+            with mock.patch.dict(candidate_pin.__globals__, {"run": mock.Mock(side_effect=answers)}):
+                pin = candidate_pin(source, {"go_version": "1.27.1", "nixpkgs_rev": "b" * 40})
+            self.assertEqual(pin, {"nixpkgs_rev": revision, "nixpkgs_hash": source_hash, "go_attr": "go_1_28", "go_version": "1.28.1"})
+            with mock.patch.dict(candidate_pin.__globals__, {"run": mock.Mock(side_effect=answers)}):
+                with self.assertRaisesRegex(ValueError, "no stable Go"):
+                    candidate_pin(source, {"go_version": "1.28.2", "nixpkgs_rev": "b" * 40})
+            same_revision = mock.Mock(return_value=answers[0])
+            with mock.patch.dict(candidate_pin.__globals__, {"run": same_revision}):
+                self.assertEqual(candidate_pin(source, pin), pin)
+            self.assertEqual(same_revision.call_count, 1)
+
+    def test_discovery_failure_preserves_pin_and_success_is_idempotent(self):
+        update = self.helper["update"]
+        candidate = {"go_version": "1.28.1"}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "toolchain.json"
+            original = '{"go_version": "1.27.1"}\n'
+            path.write_text(original)
+            with mock.patch.dict(update.__globals__, {"candidate_pin": mock.Mock(side_effect=ValueError("unavailable"))}):
+                with self.assertRaises(ValueError):
+                    update(Path(temp), path)
+            self.assertEqual(path.read_text(), original)
+            with mock.patch.dict(update.__globals__, {"candidate_pin": mock.Mock(return_value=candidate)}):
+                self.assertTrue(update(Path(temp), path))
+                self.assertFalse(update(Path(temp), path))
+
+
 class UpdateUpstreamsWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -43,17 +108,19 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         cls.updater = UPDATER.read_text()
         cls.detector = PACKAGE_DETECTOR.read_text()
 
-    def test_github_cli_uses_released_go_127_in_packages_and_overlay(self) -> None:
+    def test_github_cli_uses_its_pinned_toolchain_in_packages_and_overlay(self) -> None:
         flake = (ROOT / "flake.nix").read_text()
         package = (ROOT / "pkgs/github-cli/default.nix").read_text()
-        toolchain = flake.split("githubCliGoModuleFor = system:", 1)[1].split("pkgsFor =", 1)[0]
-        self.assertIn('version = "1.27.1";', toolchain)
-        self.assertIn('url = "https://go.dev/dl/go${version}.src.tar.gz";', toolchain)
-        self.assertIn("goPkgs.buildGo127Module.override { inherit go; }", toolchain)
-        self.assertEqual(flake.count("buildGo127Module = githubCliGoModuleFor system;"), 2)
-        self.assertIn("buildGo127Module rec {", package)
+        toolchain = (ROOT / "pkgs/github-cli/toolchain.nix").read_text()
+        self.assertIn("import ./pkgs/github-cli/toolchain.nix", flake)
+        self.assertIn("goPkgs.buildGoModule.override { inherit go; }", toolchain)
+        self.assertIn("assert go.version == pin.go_version;", toolchain)
+        self.assertEqual(flake.count("githubCliGoModule = githubCliGoModuleFor system;"), 2)
+        self.assertIn("githubCliGoModule rec {", package)
         self.assertNotIn("buildGo126Module", package)
         self.assertIn('"$out/bin/gh" --version', package)
+        block = self.updater.split("block_github_cli() {", 1)[1].split("\nblock_notion_cli()", 1)[0]
+        self.assertLess(block.index("update-github-cli-toolchain"), block.index('"$latest_version" == "$current_version"'))
 
     def test_go_toolchain_mismatch_is_reported_and_hash_is_restored(self) -> None:
         helpers = self.updater[self.updater.index("nix_string_value() {"):self.updater.index("json_field() {")]
@@ -84,8 +151,11 @@ discover_nix_fixed_hash github-cli {shlex.quote(str(package))} vendorHash
             self.assertIn("-k CodexCargoHashUpdaterTests", step)
             self.assertNotIn("continue-on-error", step)
         controls = workflow_step(ci, "Check update workflow contracts")
-        for suite in ("UpdateUpstreamsWorkflowTests", "PackageDetectorTests", "UpdateArtifactTests"):
+        for suite in ("UpdateUpstreamsWorkflowTests", "PackageDetectorTests", "UpdateArtifactTests", "GitHubCliToolchainTests"):
             self.assertIn(f"-k {suite}", controls)
+        go_checks = workflow_step(self.workflow, "Check GitHub CLI toolchain contracts")
+        self.assertIn("-k GitHubCliToolchainTests", go_checks)
+        self.assertNotIn("continue-on-error", go_checks)
         remaining = workflow_step(self.workflow, "Build changed packages")
         for package, label, command in (
             ("hermes-agent", "Hermes", "python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v"),
@@ -127,7 +197,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
 """], cwd=repo, capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                expected = ["hermes-agent", "github-cli", "supabase-cli"] if changed and mode != "codex-only" else []
+                expected = ["hermes-agent", "supabase-cli"] if changed and mode != "codex-only" else []
                 self.assertEqual(result.stdout.splitlines(), expected)
 
     def test_verified_codex_commit_precedes_unrelated_updates(self) -> None:
@@ -314,14 +384,16 @@ lock_fingerprint() { printf 'unchanged'; }
 block_archon() { printf 'updated\\n' > "$archon_package_file"; }
 block_github_cli() {
   printf 'broken-new-dependencies\\n' > "$github_cli_package_file"
+  printf 'broken-new-toolchain\\n' > "$github_cli_toolchain_file"
   return 1
 }
 '''
-        script = self.updater[:selection] + stubs + "\n" + self.updater[selection:]
-        for mode in ("--without-codex", "--github-cli-only"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+        for mode, toolchain_only in (("--without-codex", False), ("--github-cli-only", False), ("--github-cli-only", True)):
+            refresh = 'block_github_cli() { printf "updated\\n" > "$github_cli_toolchain_file"; }' if toolchain_only else ""
+            script = self.updater[:selection] + stubs + "\n" + refresh + "\n" + self.updater[selection:]
+            with self.subTest(mode=mode, toolchain_only=toolchain_only), tempfile.TemporaryDirectory() as temp:
                 repo = Path(temp)
-                for name in re.findall(r'^\w+_package_file="([^"]+)"', self.updater, re.MULTILINE):
+                for name in re.findall(r'^\w+_(?:package|toolchain)_file="([^"]+)"', self.updater, re.MULTILINE):
                     path = repo / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("original\n")
@@ -333,10 +405,11 @@ block_github_cli() {
                     capture_output=True, text=True,
                 )
                 self.assertEqual((repo / "pkgs/github-cli/default.nix").read_text(), "original\n")
+                self.assertEqual((repo / "pkgs/github-cli/toolchain.json").read_text(), "updated\n" if toolchain_only else "original\n")
                 self.assertEqual((repo / "flake.lock").read_text(), "original\n")
-                if mode == "--without-codex":
+                if mode == "--without-codex" or toolchain_only:
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual((repo / ".changed-packages").read_text(), "archon\n")
+                    self.assertEqual((repo / ".changed-packages").read_text(), "github-cli\n" if toolchain_only else "archon\n")
                     self.assertIn("changed=true", output.read_text())
                 else:
                     self.assertEqual(result.returncode, 1, result.stderr)
@@ -1476,7 +1549,8 @@ class PackageDetectorTests(unittest.TestCase):
         cases = (
             ("scripts/patch-camofox-browser.py", "before", "after", ["camofox-browser"]),
             ("scripts/repair-camofox-package-lock.py", "before", "after", ["camofox-browser"]),
-            ("flake.lock", json.dumps(before_lock), json.dumps(after_lock), ["hermes-agent", "github-cli", "supabase-cli"]),
+            ("flake.lock", json.dumps(before_lock), json.dumps(after_lock), ["hermes-agent", "supabase-cli"]),
+            ("scripts/update-github-cli-toolchain", "before", "after", ["github-cli"]),
         )
         for path, before, after, expected in cases:
             with self.subTest(path=path), tempfile.TemporaryDirectory() as temp:
@@ -1729,7 +1803,7 @@ class UpdateArtifactTests(unittest.TestCase):
         rejected = self.tool(*create_args, check=False)
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("metadata does not match patch paths", rejected.stderr)
-        packages.write_text("hermes-agent\ngithub-cli\nsupabase-cli\n")
+        packages.write_text("hermes-agent\nsupabase-cli\n")
         self.tool(*create_args)
         self.reset_candidate()
         self.tool(
@@ -1753,7 +1827,7 @@ class UpdateArtifactTests(unittest.TestCase):
         )
         rejected = self.tool("create", "--phase", "remaining", *args, check=False)
         self.assertNotEqual(rejected.returncode, 0)
-        self.assertIn("unexpected paths", rejected.stderr)
+        self.assertIn("outside its publication lane", rejected.stderr)
         (self.repo / "flake.lock").write_text('{"version": 2}\n')
         rejected = self.tool("create", "--phase", "github-cli", *args, check=False)
         self.assertNotEqual(rejected.returncode, 0)
@@ -1766,6 +1840,24 @@ class UpdateArtifactTests(unittest.TestCase):
             "--artifact-dir", str(self.artifact),
         )
         self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "pkgs/github-cli/default.nix")
+
+    def test_github_cli_toolchain_only_artifact_round_trip(self) -> None:
+        pin = self.repo / "pkgs/github-cli/toolchain.json"
+        pin.parent.mkdir(parents=True)
+        pin.write_text('{"go_version":"1.27.1"}\n')
+        self.git("add", "pkgs/github-cli/toolchain.json")
+        self.git("commit", "-q", "-m", "toolchain base")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        pin.write_text('{"go_version":"1.28.1"}\n')
+        (self.repo / ".changed-packages").write_text("github-cli\n")
+        args = ("--base-sha", self.base, "--packages-file", ".changed-packages", "--artifact-dir", str(self.artifact))
+        rejected = self.tool("create", "--phase", "remaining", *args, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("outside its publication lane", rejected.stderr)
+        self.tool("create", "--phase", "github-cli", *args)
+        self.reset_candidate()
+        self.tool("verify-apply", "--phase", "github-cli", "--base-sha", self.base, "--artifact-dir", str(self.artifact))
+        self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "pkgs/github-cli/toolchain.json")
 
     def test_create_rejects_path_outside_phase_allowlist(self) -> None:
         (self.repo / "flake.lock").write_text('{"version": 2}\n')

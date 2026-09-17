@@ -509,6 +509,9 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = true
 
+      - name: Check GitHub CLI toolchain contracts
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k GitHubCliToolchainTests -v
+
       - name: Update GitHub CLI input
         id: update
         env:

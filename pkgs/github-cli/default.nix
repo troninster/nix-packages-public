@@ -1,11 +1,11 @@
 {
   lib,
-  buildGo127Module,
+  githubCliGoModule,
   fetchFromGitHub,
   ...
 }:
 
-buildGo127Module rec {
+githubCliGoModule rec {
   pname = "github-cli";
   version = "2.101.0";
 

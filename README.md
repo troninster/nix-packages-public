@@ -134,6 +134,9 @@ GitHub CLI release updates have their own fail-closed lane after the remaining
 packages: a new `gh` dependency/hash/build failure cannot suppress already
 verified updates to other packages. Shared-builder checks remain mandatory; see
 `docs/package-updates.md` for the transaction boundaries.
+Its Go compiler and transitive build dependencies are automatically selected
+from a separately pinned Nixpkgs snapshot, including toolchain-only updates;
+upstream library locks and full build/cache gates remain authoritative.
 Oh My Pi is intentionally updated through a reviewed fixed-hash package change,
 not by this scheduled workflow.
 
