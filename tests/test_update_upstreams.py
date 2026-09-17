@@ -43,6 +43,39 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         cls.updater = UPDATER.read_text()
         cls.detector = PACKAGE_DETECTOR.read_text()
 
+    def test_github_cli_uses_released_go_127_in_packages_and_overlay(self) -> None:
+        flake = (ROOT / "flake.nix").read_text()
+        package = (ROOT / "pkgs/github-cli/default.nix").read_text()
+        toolchain = flake.split("githubCliGoModuleFor = system:", 1)[1].split("pkgsFor =", 1)[0]
+        self.assertIn('version = "1.27.1";', toolchain)
+        self.assertIn('url = "https://go.dev/dl/go${version}.src.tar.gz";', toolchain)
+        self.assertIn("goPkgs.buildGo127Module.override { inherit go; }", toolchain)
+        self.assertEqual(flake.count("buildGo127Module = githubCliGoModuleFor system;"), 2)
+        self.assertIn("buildGo127Module rec {", package)
+        self.assertNotIn("buildGo126Module", package)
+        self.assertIn('"$out/bin/gh" --version', package)
+
+    def test_go_toolchain_mismatch_is_reported_and_hash_is_restored(self) -> None:
+        helpers = self.updater[self.updater.index("nix_string_value() {"):self.updater.index("json_field() {")]
+        discovery = self.updater[self.updater.index("discover_nix_fixed_hash() {"):self.updater.index("update_tagged_go_package() {")]
+        with tempfile.TemporaryDirectory() as temp:
+            package = Path(temp) / "default.nix"
+            original = '  vendorHash = "sha256-original=";\n'
+            package.write_text(original)
+            diagnostic = "go.mod requires go >= 1.27.0 (running go 1.26.5; GOTOOLCHAIN=local)"
+            result = subprocess.run(
+                ["bash", "-c", f'''
+set -euo pipefail
+{helpers}
+{discovery}
+nix() {{ printf '%s\\n' {shlex.quote('       > go: ' + diagnostic)} >&2; return 1; }}
+discover_nix_fixed_hash github-cli {shlex.quote(str(package))} vendorHash
+'''], capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(diagnostic, result.stderr)
+            self.assertEqual(package.read_text(), original)
+
     def test_focused_contract_tests_gate_the_matching_builds(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         for workflow in (ci, self.workflow):

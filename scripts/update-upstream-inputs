@@ -340,16 +340,17 @@ discover_nix_fixed_hash() {
   fi
 
   discovered="$(sed -n 's#^[[:space:]]*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\)$#\1#p' "$log" | tail -n 1)"
-  rm -f "$log"
   if [[ ! "$discovered" =~ ^sha256-[A-Za-z0-9+/]{43}=$ ]]; then
+    # Surface the known toolchain mismatch, not arbitrary build-log payloads.
+    sed -nE 's/^.*(go\.mod requires go >= [0-9.]+ \(running go [0-9.a-z]+; GOTOOLCHAIN=local\)).*$/\1/p' "$log" >&2
     cp "$backup" "$file"
-    rm -f "$backup"
+    rm -f "$backup" "$log"
     echo "failed to discover $attr for ${package}" >&2
     return 1
   fi
 
   replace_nix_string "$attr" "$discovered" "$file"
-  rm -f "$backup"
+  rm -f "$backup" "$log"
   printf '%s\n' "$discovered"
 }
 

@@ -1,22 +1,22 @@
 {
   lib,
-  buildGo126Module,
+  buildGo127Module,
   fetchFromGitHub,
   ...
 }:
 
-buildGo126Module rec {
+buildGo127Module rec {
   pname = "github-cli";
-  version = "2.100.0";
+  version = "2.101.0";
 
   src = fetchFromGitHub {
     owner = "cli";
     repo = "cli";
     rev = "v${version}";
-    hash = "sha256-9tnSQPSqllE+Ke6LKyNbnOF1drzdEwesEuPdmWD1X5c=";
+    hash = "sha256-EoKF2m5sZP+uQ5AVOKkFqSCACfkeUc7vnH8PHWCO6FE=";
   };
 
-  vendorHash = "sha256-ZqUs2BnasF3QBX0I2Sxh2A/CnO61Vy6gRn1hkf0n9AY=";
+  vendorHash = "sha256-4KYQBgMNc/sI0mbcXSfJ7A/77VAS6NM8TOzQ3w7AlK8=";
 
   subPackages = [ "cmd/gh" ];
 
@@ -28,6 +28,13 @@ buildGo126Module rec {
   ];
 
   doCheck = false;
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    "$out/bin/gh" --version | grep -F "gh version ${version} "
+    runHook postInstallCheck
+  '';
 
   meta = {
     description = "GitHub command line tool";
