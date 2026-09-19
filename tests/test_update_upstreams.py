@@ -119,8 +119,11 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         self.assertIn("githubCliGoModule rec {", package)
         self.assertNotIn("buildGo126Module", package)
         self.assertIn('"$out/bin/gh" --version', package)
-        block = self.updater.split("block_github_cli() {", 1)[1].split("\nblock_notion_cli()", 1)[0]
+        block = self.updater.split("update_pinned_go_package() {", 1)[1].split("\nblock_github_cli()", 1)[0]
         self.assertLess(block.index("update-github-cli-toolchain"), block.index('"$latest_version" == "$current_version"'))
+        self.assertIn('supabase/cli apps/cli-go', self.updater)
+        self.assertEqual(flake.count("supabaseCliGoModule = supabaseCliGoModuleFor system;"), 2)
+        self.assertNotIn("hermes-agent.inputs.nixpkgs", flake)
 
     def test_go_toolchain_mismatch_is_reported_and_hash_is_restored(self) -> None:
         helpers = self.updater[self.updater.index("nix_string_value() {"):self.updater.index("json_field() {")]
@@ -165,11 +168,16 @@ discover_nix_fixed_hash github-cli {shlex.quote(str(package))} vendorHash
             self.assertIn(f"matrix.package == '{package}'", step)
             self.assertIn(command, step)
             self.assertLess(ci.index(step), ci.index("      - name: Build package\n"))
-            case = remaining.split(f"{package})", 1)[1].split(";;", 1)[0]
-            self.assertIn(command, case)
-            self.assertLess(remaining.index(command), remaining.index("./scripts/build-package"))
+            if package == "camofox-browser":
+                candidate = workflow_step(self.workflow, "Check Camofox candidate contracts")
+                self.assertIn(command, candidate)
+                self.assertLess(self.workflow.index(candidate), self.workflow.index("      - name: Build verified Camofox update\n"))
+            else:
+                case = remaining.split(f"{package})", 1)[1].split(";;", 1)[0]
+                self.assertIn(command, case)
+                self.assertLess(remaining.index(command), remaining.index("./scripts/build-package"))
 
-    def test_nested_hermes_lock_change_selects_shared_builder_consumers(self) -> None:
+    def test_nested_hermes_lock_change_selects_only_hermes(self) -> None:
         start = self.updater.index(
             'if [[ "$update_mode" != "codex-only"', self.updater.index("changed=()")
         )
@@ -197,7 +205,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
 """], cwd=repo, capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                expected = ["hermes-agent", "supabase-cli"] if changed and mode != "codex-only" else []
+                expected = ["hermes-agent"] if changed and mode != "codex-only" else []
                 self.assertEqual(result.stdout.splitlines(), expected)
 
     def test_verified_codex_commit_precedes_unrelated_updates(self) -> None:
@@ -233,11 +241,11 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
         prepare_remaining = workflow_job(self.workflow, "prepare-remaining")
         publish_remaining = workflow_job(self.workflow, "publish-remaining")
 
-        for job in (prepare_codex, prepare_remaining, workflow_job(self.workflow, "prepare-github-cli")):
+        for job in (prepare_codex, prepare_remaining, workflow_job(self.workflow, "prepare-github-cli"), workflow_job(self.workflow, "prepare-camofox")):
             self.assertIn("permissions:\n      contents: read", job)
             self.assertIn("persist-credentials: false", job)
             self.assertNotIn("git push", job)
-        for job in (publish_codex, publish_remaining, workflow_job(self.workflow, "publish-github-cli")):
+        for job in (publish_codex, publish_remaining, workflow_job(self.workflow, "publish-github-cli"), workflow_job(self.workflow, "publish-camofox")):
             self.assertIn("permissions:\n      contents: write", job)
             self.assertIn("update-artifact verify-apply", job)
             self.assertIn("git push origin HEAD:refs/heads/main", job)
@@ -245,7 +253,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
             self.assertNotIn("CACHIX_AUTH_TOKEN", job)
 
     def test_secrets_are_scoped_to_the_steps_that_need_them(self) -> None:
-        self.assertEqual(self.workflow.count("secrets.CACHIX_AUTH_TOKEN"), 9)
+        self.assertEqual(self.workflow.count("secrets.CACHIX_AUTH_TOKEN"), 12)
         for step_name in ("Detect Cachix configuration", "Configure Cachix"):
             for step in re.findall(
                 rf"      - name: {step_name}\n.*?(?=\n      - name: |\n  [a-z0-9-]+:|\Z)",
@@ -253,7 +261,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
                 re.DOTALL,
             ):
                 self.assertIn("secrets.CACHIX_AUTH_TOKEN", step)
-        for step_name in ("Build verified Codex update", "Build changed packages", "Build verified GitHub CLI update"):
+        for step_name in ("Build verified Codex update", "Build changed packages", "Build verified GitHub CLI update", "Build verified Camofox update"):
             step = workflow_step(self.workflow, step_name)
             self.assertIn("secrets.CACHIX_AUTH_TOKEN", step)
             self.assertIn("REQUIRE_CACHIX_PUSH: 1", step)
@@ -322,7 +330,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
         self.assertIn("run: cmp ", workflow_step(ci, "Verify artifact transport smoke"))
 
     def test_publish_jobs_revalidate_artifact_and_base_before_push(self) -> None:
-        for job_name in ("publish-codex", "publish-remaining", "publish-github-cli"):
+        for job_name in ("publish-codex", "publish-remaining", "publish-github-cli", "publish-camofox"):
             job = workflow_job(self.workflow, job_name)
             self.assertIn("git ls-remote origin refs/heads/main", job)
             self.assertGreaterEqual(job.count('"$remote_sha" != "$EXPECTED_BASE_SHA"'), 2)
@@ -339,7 +347,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
         )
         codex_mode = self.updater.index("  codex-only)\n", selection)
         without_mode = self.updater.index("  without-codex)\n", codex_mode)
-        codex_block = self.updater[codex_mode:without_mode]
+        codex_block = self.updater[codex_mode:self.updater.index("  github-cli-only)\n", codex_mode)]
         self.assertIn("run_block codex_ref", codex_block)
         self.assertIn("run_block codex_cargo_hashes", codex_block)
         self.assertIn(
@@ -351,7 +359,7 @@ add_changed_package() {{ printf '%s\\n' "$1"; }}
         remaining_mode = self.updater.index("  without-codex)\n", without_mode)
         remaining_end = self.updater.index("esac", remaining_mode)
         remaining_block = self.updater[remaining_mode:remaining_end]
-        self.assertIn("block_camofox", remaining_block)
+        self.assertNotIn("block_camofox", remaining_block)
         self.assertNotIn("run_block codex_ref", remaining_block)
         self.assertNotIn("run_block github_cli", remaining_block)
 
@@ -416,6 +424,47 @@ block_github_cli() {
                     self.assertIn("required upstream update blocks failed: github_cli", result.stderr)
                     self.assertFalse((repo / ".changed-packages").exists())
                     self.assertFalse(output.exists())
+
+    def test_camofox_failure_is_isolated_and_rolled_back(self) -> None:
+        prepare = workflow_job(self.workflow, "prepare-camofox")
+        self.assertIn("needs.prepare-github-cli.result == 'failure'", prepare)
+        self.assertIn("needs.publish-github-cli.result == 'success'", prepare)
+        self.assertIn("needs.publish-github-cli.result == 'skipped'", prepare)
+        self.assertIn("!cancelled()", prepare)
+        self.assertNotIn("needs.publish-github-cli.result == 'failure'", prepare)
+        self.assertIn("--camofox-only", prepare)
+        self.assertIn("./scripts/build-package camofox-browser", prepare)
+        self.assertIn("-k ExternalPackageContractTests.test_camofox", prepare)
+        for lane in ("prepare-remaining", "publish-remaining", "prepare-github-cli", "publish-github-cli"):
+            self.assertNotIn("needs.prepare-camofox", workflow_job(self.workflow, lane))
+        selection = self.updater.index('case "$update_mode" in', self.updater.index("block_symphony_ts()"))
+        blocks = re.findall(r"^block_([a-z_]+)\(\)", self.updater, re.MULTILINE)
+        stubs = "\n".join(f"block_{name}() {{ return 0; }}" for name in blocks)
+        stubs += '''
+lock_fingerprint() { printf 'unchanged'; }
+block_archon() { printf 'updated\\n' > "$archon_package_file"; }
+block_camofox() { printf 'broken\\n' > "$camofox_package_file"; return 1; }
+'''
+        script = self.updater[:selection] + stubs + "\n" + self.updater[selection:]
+        for mode in ("--without-codex", "--camofox-only"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                repo = Path(temp)
+                for name in re.findall(r'^\w+_(?:package|toolchain)_file="([^"]+)"', self.updater, re.MULTILINE):
+                    path = repo / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("original\n")
+                (repo / "flake.lock").write_text("original\n")
+                output = repo / "outputs"
+                result = subprocess.run(["bash", "-c", script, "fixture", mode], cwd=repo,
+                    env={**os.environ, "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
+                self.assertEqual((repo / "pkgs/camofox-browser/default.nix").read_text(), "original\n")
+                if mode == "--without-codex":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((repo / ".changed-packages").read_text(), "archon\n")
+                else:
+                    self.assertEqual(result.returncode, 1)
+                    self.assertFalse(output.exists())
+                    self.assertFalse((repo / ".changed-packages").exists())
 
     def test_remaining_lane_covers_external_packages_only(self) -> None:
         expected_blocks = (
@@ -1037,18 +1086,17 @@ class ExternalPackageContractTests(unittest.TestCase):
                     self.assertEqual(pkgman.read_bytes(), before_pkgman)
                     self.assertEqual(server.read_bytes(), before_server)
 
-    def test_camofox_package_pins_verified_114_candidate(self) -> None:
+    def test_camofox_package_has_reproducible_candidate_pins(self) -> None:
         package = (ROOT / "pkgs" / "camofox-browser" / "default.nix").read_text()
-        for pin in (
-            'camofoxBrowserVersion = "1.14.0";',
-            'camofoxBrowserRev = "e5a36f5cd0332fde6597de474329a308a53a0716";',
-            'camofoxBrowserHash = "sha256-POVwAiVoScS5c1QMZslz1wbfWttYdeQEy2msxoVt+uk=";',
-            'camofoxBrowserNpmDepsHash = "sha256-W+8NKDqwBY6vJtgmrY5rYqDd4sxzBRbk65w9krwTK5g=";',
-            'camoufoxEngineReleaseTag = "v152.0.4-beta.30";',
-            'camoufoxEngineVersion = "152.0.4-beta.30";',
-            'camoufoxEngineHash = "sha256-VyDUW4lM4XcFQ94CTG8Q1RSzi+Vg+i3DIms9hYbK9nI=";',
-        ):
-            self.assertIn(pin, package)
+        # Historical source-layout contracts are exercised by the fixtures
+        # below. A live package pin must not freeze the updater at that release.
+        self.assertRegex(package, r'camofoxBrowserVersion = "[0-9]+\.[0-9]+\.[0-9]+";')
+        self.assertRegex(package, r'camofoxBrowserRev = "[0-9a-f]{40}";')
+        for name in ("camofoxBrowserHash", "camofoxBrowserNpmDepsHash", "camoufoxEngineHash"):
+            self.assertRegex(package, rf'{name} = "sha256-[A-Za-z0-9+/]{{43}}=";')
+        engine = re.search(r'camoufoxEngineVersion = "([^"\n]+)";', package)
+        self.assertIsNotNone(engine)
+        self.assertIn(f'camoufoxEngineReleaseTag = "v{engine.group(1)}";', package)
 
     def test_camofox_lock_repair_handles_114_fixture_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1149,16 +1197,13 @@ class ExternalPackageContractTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unexpected Camofox glob paths", result.stderr)
 
-    def test_go_packages_use_pinned_go126_builder(self) -> None:
+    def test_go_packages_use_independent_pinned_builders(self) -> None:
         flake = (ROOT / "flake.nix").read_text()
-        self.assertIn(
-            "hermes-agent.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module",
-            flake,
-        )
-        for package in ("github-cli", "supabase-cli"):
+        self.assertNotIn("hermes-agent.inputs.nixpkgs", flake)
+        for package, builder in (("github-cli", "githubCliGoModule"), ("supabase-cli", "supabaseCliGoModule")):
             with self.subTest(package=package):
                 source = (ROOT / "pkgs" / package / "default.nix").read_text()
-                self.assertIn("buildGo126Module", source)
+                self.assertIn(builder, source)
                 self.assertNotIn("buildGo125Module", source)
 
     def test_freellmapi_keeps_server_client_scope(self) -> None:
@@ -1546,11 +1591,20 @@ class PackageDetectorTests(unittest.TestCase):
         }}
         after_lock = json.loads(json.dumps(before_lock))
         after_lock["nodes"]["hermes-nixpkgs"]["locked"]["rev"] = "after"
+        rust_before = {"root": "root", "nodes": {
+            "root": {"inputs": {"codex": "codex", "rust-overlay": "rust-overlay"}},
+            "codex": {"locked": {"rev": "same"}, "inputs": {"rust-overlay": ["rust-overlay"]}},
+            "rust-overlay": {"locked": {"rev": "before"}},
+        }}
+        rust_after = json.loads(json.dumps(rust_before))
+        rust_after["nodes"]["rust-overlay"]["locked"]["rev"] = "after"
         cases = (
             ("scripts/patch-camofox-browser.py", "before", "after", ["camofox-browser"]),
             ("scripts/repair-camofox-package-lock.py", "before", "after", ["camofox-browser"]),
-            ("flake.lock", json.dumps(before_lock), json.dumps(after_lock), ["hermes-agent", "supabase-cli"]),
-            ("scripts/update-github-cli-toolchain", "before", "after", ["github-cli"]),
+            ("flake.lock", json.dumps(before_lock), json.dumps(after_lock), ["hermes-agent"]),
+            ("flake.lock", json.dumps(rust_before), json.dumps(rust_after), ["codex"]),
+            ("scripts/update-github-cli-toolchain", "before", "after", ["github-cli", "supabase-cli"]),
+            ("pkgs/github-cli/toolchain.nix", "before", "after", ["github-cli", "supabase-cli"]),
         )
         for path, before, after, expected in cases:
             with self.subTest(path=path), tempfile.TemporaryDirectory() as temp:
@@ -1792,10 +1846,10 @@ class UpdateArtifactTests(unittest.TestCase):
             "pkgs/archon/default.nix",
         )
 
-    def test_remaining_lock_requires_all_shared_builder_consumers(self) -> None:
+    def test_remaining_lock_selects_only_hermes(self) -> None:
         (self.repo / "flake.lock").write_text('{"version": 2}\n')
         packages = self.repo / ".changed-packages"
-        packages.write_text("hermes-agent\n")
+        packages.write_text("hermes-agent\nsupabase-cli\n")
         create_args = (
             "create", "--phase", "remaining", "--base-sha", self.base,
             "--packages-file", ".changed-packages", "--artifact-dir", str(self.artifact),
@@ -1803,7 +1857,7 @@ class UpdateArtifactTests(unittest.TestCase):
         rejected = self.tool(*create_args, check=False)
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("metadata does not match patch paths", rejected.stderr)
-        packages.write_text("hermes-agent\nsupabase-cli\n")
+        packages.write_text("hermes-agent\n")
         self.tool(*create_args)
         self.reset_candidate()
         self.tool(
@@ -1859,6 +1913,45 @@ class UpdateArtifactTests(unittest.TestCase):
         self.tool("verify-apply", "--phase", "github-cli", "--base-sha", self.base, "--artifact-dir", str(self.artifact))
         self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "pkgs/github-cli/toolchain.json")
 
+    def test_camofox_artifact_cannot_include_or_block_remaining_packages(self) -> None:
+        package = self.repo / "pkgs/camofox-browser/default.nix"
+        package.parent.mkdir(parents=True, exist_ok=True)
+        package.write_text("version = old;\n")
+        self.git("add", "pkgs/camofox-browser/default.nix")
+        self.git("commit", "-q", "-m", "browser base")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        package.write_text("version = new;\n")
+        (self.repo / ".changed-packages").write_text("camofox-browser\n")
+        args = ("--base-sha", self.base, "--packages-file", ".changed-packages", "--artifact-dir", str(self.artifact))
+        rejected = self.tool("create", "--phase", "remaining", *args, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        other = self.repo / "pkgs/archon/default.nix"
+        original = other.read_text()
+        other.write_text("version = new;\n")
+        rejected = self.tool("create", "--phase", "camofox", *args, check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        other.write_text(original)
+        self.tool("create", "--phase", "camofox", *args)
+        self.reset_candidate()
+        self.tool("verify-apply", "--phase", "camofox", "--base-sha", self.base, "--artifact-dir", str(self.artifact))
+        self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "pkgs/camofox-browser/default.nix")
+
+    def test_supabase_toolchain_only_artifact_round_trip(self) -> None:
+        pin = self.repo / "pkgs/supabase-cli/toolchain.json"
+        pin.parent.mkdir(parents=True, exist_ok=True)
+        pin.write_text('{"go_version":"1.26.5"}\n')
+        self.git("add", "pkgs/supabase-cli/toolchain.json")
+        self.git("commit", "-q", "-m", "supabase toolchain base")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        pin.write_text('{"go_version":"1.27.1"}\n')
+        (self.repo / ".changed-packages").write_text("supabase-cli\n")
+        self.tool("create", "--phase", "remaining", "--base-sha", self.base,
+            "--packages-file", ".changed-packages", "--artifact-dir", str(self.artifact))
+        self.reset_candidate()
+        self.tool("verify-apply", "--phase", "remaining", "--base-sha", self.base,
+            "--artifact-dir", str(self.artifact))
+        self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.strip(), "pkgs/supabase-cli/toolchain.json")
+
     def test_create_rejects_path_outside_phase_allowlist(self) -> None:
         (self.repo / "flake.lock").write_text('{"version": 2}\n')
         (self.repo / "unexpected.txt").write_text("no\n")
@@ -1898,7 +1991,7 @@ class UpdateArtifactTests(unittest.TestCase):
 
     def test_create_rejects_changed_package_metadata_that_disagrees_with_paths(self) -> None:
         (self.repo / "pkgs" / "archon" / "default.nix").write_text("version = new;\n")
-        (self.repo / ".changed-packages").write_text("camofox-browser\n")
+        (self.repo / ".changed-packages").write_text("hermes-agent\n")
         result = self.tool(
             "create",
             "--phase",

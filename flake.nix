@@ -54,15 +54,18 @@
       };
     githubCliGoModuleFor = system:
       import ./pkgs/github-cli/toolchain.nix { inherit system; };
+    supabaseCliGoModuleFor = system:
+      import ./pkgs/github-cli/toolchain.nix {
+        inherit system;
+        pinFile = ./pkgs/supabase-cli/toolchain.json;
+      };
     pkgsFor = system: import nixpkgs {
       inherit system;
       config.allowUnfree = true;
       overlays = [
         codex.inputs.rust-overlay.overlays.default
         (final: prev: {
-          # The pinned Hermes nixpkgs input supplies a released Go 1.26 builder;
-          # Codex release locks can still point at pre-release Go toolchains.
-          buildGo126Module = hermes-agent.inputs.nixpkgs.legacyPackages.${system}.buildGo126Module;
+          supabaseCliGoModule = supabaseCliGoModuleFor system;
           githubCliGoModule = githubCliGoModuleFor system;
         })
       ];
@@ -260,6 +263,7 @@
       (localPackagesFor final {
         inherit rustToolchain;
         githubCliGoModule = githubCliGoModuleFor system;
+        supabaseCliGoModule = supabaseCliGoModuleFor system;
       }) // {
         codex = codexPackage;
         hermes-agent = hermesAgentPackage;

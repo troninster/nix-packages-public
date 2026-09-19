@@ -161,10 +161,15 @@ classify_lock_changes() {
     matched="true"
   fi
 
+  # Codex follows this root input. The closure walk above deliberately visits
+  # node-name edges only, so the follows edge needs an explicit consumer.
+  if [[ "$all_selected" != "true" ]] && lock_input_changed "rust-overlay"; then
+    add_package "codex"
+    matched="true"
+  fi
+
   if [[ "$all_selected" != "true" ]] && lock_input_changed "hermes-agent"; then
     add_package "hermes-agent"
-    # Supabase borrows buildGo126Module; GitHub CLI has its own pinned toolchain.
-    add_package "supabase-cli"
     matched="true"
   fi
 
@@ -185,6 +190,11 @@ classify_file() {
     flake.lock)
       run_checks="true"
       lock_changed="true"
+      ;;
+    pkgs/github-cli/toolchain.nix)
+      run_checks="true"
+      add_package "github-cli"
+      add_package "supabase-cli"
       ;;
     pkgs/*)
       run_checks="true"
@@ -234,6 +244,7 @@ classify_file() {
     scripts/update-github-cli-toolchain)
       run_checks="true"
       add_package "github-cli"
+      add_package "supabase-cli"
       ;;
     scripts/build-all | scripts/build-package)
       run_checks="true"

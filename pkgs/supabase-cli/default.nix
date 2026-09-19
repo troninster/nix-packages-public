@@ -1,11 +1,11 @@
 {
   lib,
-  buildGo126Module,
+  supabaseCliGoModule,
   fetchFromGitHub,
   ...
 }:
 
-buildGo126Module rec {
+supabaseCliGoModule rec {
   pname = "supabase-cli";
   version = "2.117.0";
 

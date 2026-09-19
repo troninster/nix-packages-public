@@ -36,13 +36,20 @@ the targeted update.
 
 GitHub CLI release discovery, dependency-hash generation, build and publication
 run in a separate lane after the remaining publisher. `--without-codex` is the
-scheduled remaining lane and also excludes GitHub CLI release discovery;
+scheduled remaining lane and excludes GitHub CLI and Camofox discovery;
 `--github-cli-only` updates `pkgs/github-cli/default.nix` and its data-only
 `toolchain.json` pin. A failed GitHub
 CLI candidate is rolled back and its job stays red, but earlier verified
 Codex/remaining updates are already published. No failed candidate is accepted
 and the publisher cannot change `flake.lock` or another package. The manual
 no-argument updater still checks all packages and fails on any block failure.
+
+Camofox source/engine discovery, candidate contracts, build and publication run
+in their own final lane (`--camofox-only`). A browser compatibility failure
+cannot prevent earlier verified packages from publishing. The narrow artifact
+allows only `pkgs/camofox-browser/default.nix`; it cannot carry other package
+changes. Historical compatibility fixtures remain fixed, while live pin tests
+validate reproducibility rather than requiring an obsolete release number.
 
 GitHub CLI owns an independently pinned Nixpkgs toolchain snapshot. Each poll
 checks both the release and `nixos-unstable`, selects the newest stable Go in
@@ -61,10 +68,12 @@ the writer. If Nixpkgs has no compatible stable Go yet, that lane fails safely
 and retries on a later poll; unsupported source/build-layout changes are not
 automatically rewritten.
 
-Shared dependencies are not bypassed: Hermes-provided Go-builder changes still
-rebuild Supabase alongside Hermes. GitHub CLI no longer consumes that builder,
-so its toolchain snapshot changes select only GitHub CLI. A failure in a
-shared closure still blocks that closure's publication.
+Supabase also owns an independent toolchain pin and uses the same Go discovery
+and builder code as GitHub CLI, with `apps/cli-go/go.mod` as its requirement.
+Its initial pin preserves the former Hermes-derived Nixpkgs/Go 1.26.5 snapshot;
+later polls refresh source/vendor hashes after release or toolchain changes.
+Hermes updates no longer rebuild Supabase. Changes to the shared Go helper or
+builder still select both CLI consumers; each data-only pin selects its owner.
 
 Codex updates can still require manual maintenance when upstream Rust
 dependency hashes or the prebuilt `rusty_v8` archive version changes. The
@@ -118,7 +127,8 @@ base and head commits before creating the package build matrix.
 - The registration-lifecycle helper and its focused tests build `hermes-agent`.
 - `flake.lock` changes build only the root input closure that changed:
   `codex`, `hermes-agent`, or all packages when the repository `nixpkgs` input
-  changed.
+  changed. A root `rust-overlay` change selects Codex, including its `follows`
+  dependency edge.
 - `flake.nix` changes build all packages because it can alter package wiring,
   overlays, or shared build arguments.
 - CI workflow and common build-script changes build all packages because they
