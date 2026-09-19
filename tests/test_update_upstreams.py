@@ -870,7 +870,9 @@ class ExternalPackageContractTests(unittest.TestCase):
             sources: dict[str, list[str]] = {"pkgman": [], "server": []}
             for transform in transforms:
                 variants = {variant.name: variant for variant in transform.variants}
-                if profile == "native-1.14":
+                if profile == "native-1.16" and transform.label == "idle-shutdown":
+                    name = "native-1.16"
+                elif profile in ("native-1.14", "native-1.16"):
                     name = (
                         "native-1.14"
                         if "native-1.14" in variants
@@ -883,7 +885,7 @@ class ExternalPackageContractTests(unittest.TestCase):
                 else:
                     name = "legacy" if "legacy" in variants else "shared"
                 sources[transform.target].append(variants[name].before)
-            if profile == "native-1.14":
+            if profile in ("native-1.14", "native-1.16"):
                 sources["server"].append(native_user_nav_health)
             return {target: "\n\n".join(parts) for target, parts in sources.items()}
 
@@ -891,7 +893,7 @@ class ExternalPackageContractTests(unittest.TestCase):
             root = Path(directory)
             pkgman = root / "pkgman.js"
             server = root / "server.js"
-            for profile in ("legacy", "current-ce3", "native-1.14"):
+            for profile in ("legacy", "current-ce3", "native-1.14", "native-1.16"):
                 with self.subTest(profile=profile):
                     sources = fixture(profile)
                     pkgman.write_text(sources["pkgman"])
@@ -918,7 +920,12 @@ class ExternalPackageContractTests(unittest.TestCase):
                         "if (sessions.size === 0 && getTotalTabCount() === 0) return;",
                         patched_server,
                     )
-                    if profile == "native-1.14":
+                    if profile == "native-1.16":
+                        self.assertIn(
+                            "if (browserIdleTimer || sessions.size > 0 || !browser || BROWSER_IDLE_TIMEOUT_MS <= 0) return;",
+                            patched_server,
+                        )
+                    if profile in ("native-1.14", "native-1.16"):
                         self.assertIn("userNavHealth.clear();", patched_server)
                         self.assertIn(
                             "browser.newContext({ viewport: null })", patched_server
