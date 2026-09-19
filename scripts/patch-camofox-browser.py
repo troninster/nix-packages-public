@@ -266,6 +266,11 @@ TRANSFORMS = (
                 "  if (browserIdleTimer || sessions.size > 0 || !browser) return;",
                 None,
             ),
+            Variant(
+                "native-1.16",
+                "  if (browserIdleTimer || sessions.size > 0 || !browser || BROWSER_IDLE_TIMEOUT_MS <= 0) return;",
+                None,
+            ),
         ),
     ),
     Transform(
