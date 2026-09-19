@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pin a released Go toolchain and its Nix build dependencies for GitHub CLI."""
+"""Pin a released Go toolchain and its Nix dependencies for a candidate module."""
 
 import argparse
 import json
@@ -35,7 +35,7 @@ def required_version(go_mod):
             value = value[2:]
         requirements.append(version(value))
     if "go" not in seen:
-        raise ValueError("GitHub CLI source has no explicit Go requirement")
+        raise ValueError("candidate source has no explicit Go requirement")
     return max(requirements)
 
 

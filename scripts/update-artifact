@@ -17,9 +17,9 @@ PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PHASE_PACKAGES = {
     "codex": {"codex"},
     "github-cli": {"github-cli"},
+    "camofox": {"camofox-browser"},
     "remaining": {
         "archon",
-        "camofox-browser",
         "devspace",
         "freellmapi",
         "hermes-agent",
@@ -32,16 +32,17 @@ PHASE_PACKAGES = {
 PHASE_PATHS = {
     "codex": ("flake.nix", "flake.lock"),
     "github-cli": ("pkgs/github-cli/default.nix", "pkgs/github-cli/toolchain.json"),
+    "camofox": ("pkgs/camofox-browser/default.nix",),
     "remaining": (
         "flake.lock",
         "pkgs/archon/default.nix",
-        "pkgs/camofox-browser/default.nix",
         "pkgs/devspace/default.nix",
         "pkgs/freellmapi/default.nix",
         "pkgs/notion-cli/default.nix",
         "pkgs/omp/default.nix",
         "pkgs/symphony-ts/default.nix",
         "pkgs/supabase-cli/default.nix",
+        "pkgs/supabase-cli/toolchain.json",
     ),
 }
 
@@ -110,8 +111,7 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
     packages = set()
     for path in paths:
         if path == "flake.lock":
-            # Match the remaining updater's conservative shared-builder rebuild.
-            packages.update(("hermes-agent", "supabase-cli"))
+            packages.add("hermes-agent")
         elif path == "pkgs/archon/default.nix":
             packages.add("archon")
         elif path == "pkgs/camofox-browser/default.nix":
@@ -128,7 +128,7 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
             packages.add("omp")
         elif path == "pkgs/symphony-ts/default.nix":
             packages.add("symphony-ts")
-        elif path == "pkgs/supabase-cli/default.nix":
+        elif path in ("pkgs/supabase-cli/default.nix", "pkgs/supabase-cli/toolchain.json"):
             packages.add("supabase-cli")
     return sorted(packages)
 

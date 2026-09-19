@@ -1,6 +1,6 @@
-{ system }:
+{ system, pinFile ? ./toolchain.json }:
 let
-  pin = builtins.fromJSON (builtins.readFile ./toolchain.json);
+  pin = builtins.fromJSON (builtins.readFile pinFile);
   goPkgs = import (builtins.fetchTarball {
     url = "https://github.com/NixOS/nixpkgs/archive/${pin.nixpkgs_rev}.tar.gz";
     sha256 = pin.nixpkgs_hash;

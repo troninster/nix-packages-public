@@ -16,14 +16,17 @@ case "$#" in
       --github-cli-only)
         update_mode="github-cli-only"
         ;;
+      --camofox-only)
+        update_mode="camofox-only"
+        ;;
       *)
-        echo "usage: $0 [--codex-only|--without-codex|--github-cli-only]" >&2
+        echo "usage: $0 [--codex-only|--without-codex|--github-cli-only|--camofox-only]" >&2
         exit 2
         ;;
     esac
     ;;
   *)
-    echo "usage: $0 [--codex-only|--without-codex|--github-cli-only]" >&2
+    echo "usage: $0 [--codex-only|--without-codex|--github-cli-only|--camofox-only]" >&2
     exit 2
     ;;
 esac
@@ -39,6 +42,7 @@ github_cli_toolchain_file="pkgs/github-cli/toolchain.json"
 notion_cli_package_file="pkgs/notion-cli/default.nix"
 omp_package_file="pkgs/omp/default.nix"
 supabase_cli_package_file="pkgs/supabase-cli/default.nix"
+supabase_cli_toolchain_file="pkgs/supabase-cli/toolchain.json"
 before_lock="$(mktemp)"
 before_archon_package="$(mktemp)"
 before_camofox_package="$(mktemp)"
@@ -50,8 +54,9 @@ before_github_cli_toolchain="$(mktemp)"
 before_notion_cli_package="$(mktemp)"
 before_omp_package="$(mktemp)"
 before_supabase_cli_package="$(mktemp)"
+before_supabase_cli_toolchain="$(mktemp)"
 codex_tags="$(mktemp)"
-trap 'rm -f "$before_lock" "$before_archon_package" "$before_camofox_package" "$before_symphony_ts_package" "$before_devspace_package" "$before_freellmapi_package" "$before_github_cli_package" "$before_github_cli_toolchain" "$before_notion_cli_package" "$before_omp_package" "$before_supabase_cli_package" "$codex_tags"' EXIT
+trap 'rm -f "$before_lock" "$before_archon_package" "$before_camofox_package" "$before_symphony_ts_package" "$before_devspace_package" "$before_freellmapi_package" "$before_github_cli_package" "$before_github_cli_toolchain" "$before_notion_cli_package" "$before_omp_package" "$before_supabase_cli_package" "$before_supabase_cli_toolchain" "$codex_tags"' EXIT
 
 cp flake.lock "$before_lock"
 cp "$archon_package_file" "$before_archon_package"
@@ -64,6 +69,7 @@ cp "$github_cli_toolchain_file" "$before_github_cli_toolchain"
 cp "$notion_cli_package_file" "$before_notion_cli_package"
 cp "$omp_package_file" "$before_omp_package"
 cp "$supabase_cli_package_file" "$before_supabase_cli_package"
+cp "$supabase_cli_toolchain_file" "$before_supabase_cli_toolchain"
 rm -f "$changed_packages_file"
 
 # Track per-block outcomes for the final summary. Each entry is one of:
@@ -739,32 +745,37 @@ block_freellmapi() {
   update_tagged_npm_package freellmapi "$freellmapi_package_file" tashfeenahmed/freellmapi
 }
 
-block_github_cli() {
+update_pinned_go_package() {
+  local package="$1" file="$2" toolchain_file="$3" repo="$4" module="$5"
   local current_version latest_tag latest_version source_json source_hash source_path toolchain_changed
-  current_version="$(nix_string_value version "$github_cli_package_file")"
-  latest_tag="$(latest_release_tag cli/cli)" || return 1
+  current_version="$(nix_string_value version "$file")"
+  latest_tag="$(latest_release_tag "$repo")" || return 1
   if [[ ! "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "unexpected GitHub CLI release tag: ${latest_tag}" >&2
+    echo "unexpected ${package} release tag: ${latest_tag}" >&2
     return 1
   fi
   latest_version="${latest_tag#v}"
-  source_json="$(prefetch_json true "https://github.com/cli/cli/archive/${latest_tag}.tar.gz")" || return 1
+  source_json="$(prefetch_json true "https://github.com/${repo}/archive/${latest_tag}.tar.gz")" || return 1
   source_hash="$(printf '%s\n' "$source_json" | json_field hash)"
   source_path="$(printf '%s\n' "$source_json" | json_field storePath)"
-  if [[ -z "$source_hash" || ! -f "$source_path/go.mod" ]]; then
-    echo "GitHub CLI candidate has no source hash or go.mod" >&2
+  if [[ -z "$source_hash" || ! -f "$source_path/$module/go.mod" ]]; then
+    echo "${package} candidate has no source hash or go.mod" >&2
     return 1
   fi
   toolchain_changed="$(python3 scripts/update-github-cli-toolchain \
-    --source "$source_path" --pin-file "$github_cli_toolchain_file")" || return 1
+    --source "$source_path/$module" --pin-file "$toolchain_file")" || return 1
   if [[ "$toolchain_changed" == "false" && "$latest_version" == "$current_version" ]]; then
-    echo "github-cli and its toolchain are current (${current_version})."
+    echo "${package} and its toolchain are current (${current_version})."
     return 0
   fi
-  replace_nix_string version "$latest_version" "$github_cli_package_file" || return 1
-  replace_nix_string hash "$source_hash" "$github_cli_package_file" || return 1
-  discover_nix_fixed_hash github-cli "$github_cli_package_file" vendorHash >/dev/null || return 1
-  echo "Updated github-cli ${current_version} -> ${latest_version} and its build dependencies"
+  replace_nix_string version "$latest_version" "$file" || return 1
+  replace_nix_string hash "$source_hash" "$file" || return 1
+  discover_nix_fixed_hash "$package" "$file" vendorHash >/dev/null || return 1
+  echo "Updated ${package} ${current_version} -> ${latest_version} and its build dependencies"
+}
+
+block_github_cli() {
+  update_pinned_go_package github-cli "$github_cli_package_file" "$github_cli_toolchain_file" cli/cli .
 }
 
 block_notion_cli() {
@@ -808,7 +819,7 @@ block_omp() {
 }
 
 block_supabase_cli() {
-  update_tagged_go_package supabase-cli "$supabase_cli_package_file" supabase/cli
+  update_pinned_go_package supabase-cli "$supabase_cli_package_file" "$supabase_cli_toolchain_file" supabase/cli apps/cli-go
 }
 
 # Block: nix flake update. Captures stdout/stderr to a log file and requires a
@@ -953,7 +964,7 @@ case "$update_mode" in
     run_block github_cli        block_github_cli        "$github_cli_package_file" "$github_cli_toolchain_file"
     run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
     run_block omp               block_omp               "$omp_package_file"
-    run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file"
+    run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
     run_block flake_update      block_flake_update      flake.lock
     run_block codex_cargo_hashes block_codex_cargo_hashes flake.nix
     ;;
@@ -971,17 +982,18 @@ case "$update_mode" in
   github-cli-only)
     run_block github_cli        block_github_cli        "$github_cli_package_file" "$github_cli_toolchain_file"
     ;;
-  without-codex)
-    # Scheduled remaining lane: GitHub CLI releases have their own transaction,
-    # build and publisher after this lane, just as Codex does before it.
-    run_block archon            block_archon            "$archon_package_file"
+  camofox-only)
     run_block camofox           block_camofox           "$camofox_package_file"
+    ;;
+  without-codex)
+    # Camofox and GitHub CLI have their own transactions/builds/publishers.
+    run_block archon            block_archon            "$archon_package_file"
     run_block symphony_ts       block_symphony_ts       "$symphony_ts_package_file"
     run_block devspace          block_devspace          "$devspace_package_file"
     run_block freellmapi        block_freellmapi        "$freellmapi_package_file"
     run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
     run_block omp               block_omp               "$omp_package_file"
-    run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file"
+    run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
     run_block flake_update      block_flake_update      flake.lock
     ;;
 esac
@@ -1002,12 +1014,10 @@ if [[ "$update_mode" != "without-codex" \
       || "$codex_lock_changed" == "1" ) ]]; then
   add_changed_package codex
 fi
-# The remaining lane updates Hermes and its nested inputs. Any lock change in
-# a non-Codex-only run conservatively rebuilds Hermes and its Go-builder user,
-# including nested nixpkgs-only changes. Keep update-artifact's lock mapping in sync.
+# The remaining lane updates Hermes and its nested inputs. Go CLI builders
+# have independent package-owned pins. Keep update-artifact's mapping in sync.
 if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_lock" "$PWD/flake.lock"; then
   add_changed_package hermes-agent
-  add_changed_package supabase-cli
 fi
 if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_archon_package" "$archon_package_file"; then
   add_changed_package archon
@@ -1033,7 +1043,7 @@ fi
 if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_omp_package" "$omp_package_file"; then
   add_changed_package omp
 fi
-if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_supabase_cli_package" "$supabase_cli_package_file"; then
+if [[ "$update_mode" != "codex-only" ]] && { ! cmp -s "$before_supabase_cli_package" "$supabase_cli_package_file" || ! cmp -s "$before_supabase_cli_toolchain" "$supabase_cli_toolchain_file"; }; then
   add_changed_package supabase-cli
 fi
 # Final summary: print OK/SKIPPED/FAILED for every block we ran.

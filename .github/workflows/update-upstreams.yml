@@ -388,9 +388,6 @@ jobs:
               hermes-agent)
                 python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
                 ;;
-              camofox-browser)
-                python3 -m unittest discover -s tests -p test_update_upstreams.py -k ExternalPackageContractTests.test_camofox -v
-                ;;
             esac
             NIX_BUILD_MONITOR=1 ./scripts/build-package "$package"
           done < .changed-packages
@@ -626,6 +623,161 @@ jobs:
           remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
           if [[ "$remote_sha" != "$EXPECTED_BASE_SHA" ]]; then
             echo "::error::main moved before GitHub CLI publication; refusing non-current push."
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/main
+
+  prepare-camofox:
+    name: Build verified Camofox update
+    needs:
+      - prepare-github-cli
+      - publish-github-cli
+    # Isolate browser compatibility failures after the earlier publication lanes.
+    # A failed candidate never changes their already-verified pins.
+    if: ${{ always() && !cancelled() && (needs.prepare-github-cli.result == 'failure' || (needs.prepare-github-cli.result == 'success' && (needs.publish-github-cli.result == 'success' || needs.publish-github-cli.result == 'skipped'))) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
+      changed: ${{ steps.update.outputs.changed }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Record base revision
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Update Camofox input
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./scripts/update-upstream-inputs --camofox-only
+
+      - name: Detect Cachix configuration
+        id: cachix
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [[ -n "$CACHIX_CACHE_NAME" && -n "$CACHIX_AUTH_TOKEN" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure Cachix
+        if: ${{ steps.update.outputs.changed == 'true' && steps.cachix.outputs.enabled == 'true' }}
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+
+      - name: Check Camofox candidate contracts
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k ExternalPackageContractTests.test_camofox -v
+
+      - name: Build verified Camofox update
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        env:
+          CACHIX_CACHE_NAME: ${{ vars.CACHIX_CACHE_NAME }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          REQUIRE_CACHIX_PUSH: 1
+        run: NIX_BUILD_MONITOR=1 ./scripts/build-package camofox-browser
+
+      - name: Create Camofox publication artifact
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        run: |
+          ./scripts/update-artifact create \
+            --phase camofox \
+            --base-sha "${{ steps.base.outputs.sha }}" \
+            --packages-file .changed-packages \
+            --artifact-dir "$RUNNER_TEMP/camofox-update"
+
+      - name: Upload Camofox publication artifact
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: camofox-update-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/camofox-update
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: No Camofox update
+        if: ${{ steps.update.outputs.changed != 'true' }}
+        run: echo "Camofox release pin is already current."
+
+  publish-camofox:
+    name: Publish verified Camofox update
+    needs: prepare-camofox
+    if: ${{ always() && !cancelled() && needs.prepare-camofox.result == 'success' && needs.prepare-camofox.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout exact base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare-camofox.outputs.base_sha }}
+          fetch-depth: 1
+
+      - name: Download Camofox publication artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: camofox-update-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/camofox-update
+
+      - name: Revalidate and apply Camofox artifact
+        env:
+          EXPECTED_BASE_SHA: ${{ needs.prepare-camofox.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Prepare job returned an invalid base SHA."
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::Publisher checkout does not match the prepared base."
+            exit 1
+          fi
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$remote_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved after Camofox update was prepared; refusing stale publication."
+            exit 1
+          fi
+          ./scripts/update-artifact verify-apply \
+            --phase camofox \
+            --base-sha "$EXPECTED_BASE_SHA" \
+            --artifact-dir "$RUNNER_TEMP/camofox-update"
+
+      - name: Commit and push verified Camofox update
+        env:
+          EXPECTED_BASE_SHA: ${{ needs.prepare-camofox.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "deps: update Camofox pin [skip ci]"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$remote_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved before Camofox publication; refusing non-current push."
             exit 1
           fi
           git push origin HEAD:refs/heads/main
