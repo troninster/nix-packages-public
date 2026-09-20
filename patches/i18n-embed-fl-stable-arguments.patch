@@ -1,0 +1,13 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -547,7 +547,9 @@
+         }
+         FlArgs::KeyValuePairs { specified_args } => {
+             let mut arg_assignments = proc_macro2::TokenStream::default();
+-            for (key, value) in &specified_args {
++            let mut ordered_args: Vec<_> = specified_args.iter().collect();
++            ordered_args.sort_by_key(|(key, _)| key.value());
++            for (key, value) in ordered_args {
+                 arg_assignments = quote! {
+                     #arg_assignments
+                     args.insert(#key, #value.into());

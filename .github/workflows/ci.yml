@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      check_reproducibility:
+        description: "Rebuild selected packages and require byte-identical outputs"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -202,6 +207,10 @@ jobs:
 
       - name: Build package
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
+
+      - name: Check package reproducibility
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.check_reproducibility }}
+        run: nix build --rebuild --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
 
   ci-result:
     name: CI result

@@ -82,6 +82,16 @@ names and versions in the selected Codex `codex-rs/Cargo.lock` exactly:
 upstream additions need a hash, while upstream removals require deleting the
 now-unused hash before `importCargoLock` can evaluate.
 
+The Codex build patches vendored `i18n-embed-fl` 0.9.4 to sort named arguments
+before emitting code. Its former HashMap traversal changed the `age` error
+formatter between identical builds, producing different NAR hashes for one
+store path. The patch applies with zero fuzz; review it when that dependency
+changes. Runtime hash randomization and artifact integrity checks stay intact.
+For an explicit remote reproducibility check, dispatch `ci.yml` with
+`packages=codex`, `all=false`, and `check_reproducibility=true`. The additional
+`nix build --rebuild` must match the first output byte-for-byte; it is not run
+by ordinary PR or upstream-update jobs.
+
 The Hermes `main` lock in this repository proves that the local patch still
 applies and the package still builds; it is not a host promotion channel. A
 downstream configuration can override the package input with a release-tagged

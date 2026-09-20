@@ -226,6 +226,10 @@
         # The source root is codex-rs.
         postPatch = (oldAttrs.postPatch or "") + ''
           ${codexRecursionLimitPatch}
+          # fl! must not turn HashMap iteration order into different binaries.
+          patch --batch --fuzz=0 -p1 \
+            -d "$cargoDepsCopy/i18n-embed-fl-0.9.4" \
+            < ${./patches/i18n-embed-fl-stable-arguments.patch}
         '';
         postInstall = codexPostInstall (oldAttrs.postInstall or "");
       });

@@ -646,12 +646,8 @@ class CodexPackageContractTests(unittest.TestCase):
         patch_start = flake_source.index(marker) + len(marker)
         patch_end = flake_source.index("'';", patch_start)
         helper = flake_source[patch_start:patch_end]
-        marker = 'postPatch = (oldAttrs.postPatch or "") + \'\''
-        patch_start = flake_source.index(marker) + len(marker)
-        patch_end = flake_source.index("'';", patch_start)
-        patch = flake_source[patch_start:patch_end].replace(
-            "${codexRecursionLimitPatch}", helper
-        )
+        self.assertIn("${codexRecursionLimitPatch}", flake_source)
+        patch = helper
         attribute = '#![recursion_limit = "256"]\n'
         cases = (
             ("removed-mcp", {}, True),
@@ -687,6 +683,29 @@ class CodexPackageContractTests(unittest.TestCase):
                             (source / target).read_text(), attribute + "// crate root\n"
                         )
 
+    def test_codex_i18n_patch_sorts_codegen_arguments(self) -> None:
+        patch_path = ROOT / "patches/i18n-embed-fl-stable-arguments.patch"
+        patch_source = patch_path.read_text()
+        original = "\n".join(
+            line[1:] for line in patch_source.splitlines()
+            if line.startswith(" ") or (line.startswith("-") and not line.startswith("---"))
+        ) + "\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "src/lib.rs"
+            source.parent.mkdir()
+            source.write_text(original)
+            subprocess.run(
+                ["patch", "--batch", "--fuzz=0", "-p1", "-i", str(patch_path)],
+                cwd=temporary, check=True, capture_output=True,
+            )
+            changed = source.read_text()
+            self.assertIn("ordered_args.sort_by_key(|(key, _)| key.value());", changed)
+            self.assertIn("for (key, value) in ordered_args", changed)
+            self.assertNotIn("for (key, value) in &specified_args", changed)
+        flake_source = (ROOT / "flake.nix").read_text()
+        self.assertIn('"$cargoDepsCopy/i18n-embed-fl-0.9.4"', flake_source)
+        self.assertIn("${./patches/i18n-embed-fl-stable-arguments.patch}", flake_source)
+
     def test_codex_registry_crates_use_the_official_static_download_endpoint(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
         self.assertIn(
@@ -701,6 +720,13 @@ class CodexPackageContractTests(unittest.TestCase):
             "cargoDeps = pkgs.rustPlatform.importCargoLock {",
             flake_source,
         )
+
+    def test_reproducibility_check_requires_explicit_manual_selection(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        step = workflow_step(ci, "Check package reproducibility")
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.check_reproducibility", step)
+        self.assertIn("nix build --rebuild --no-link", step)
+        self.assertNotIn("continue-on-error", step)
 
     def test_codex_post_patch_inserts_exec_recursion_limit_idempotently(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
