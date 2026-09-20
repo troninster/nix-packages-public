@@ -237,7 +237,7 @@ classify_file() {
       run_checks="true"
       add_package "camofox-browser"
       ;;
-    scripts/update-codex-cargo-hashes)
+    scripts/update-codex-cargo-hashes | patches/i18n-embed-fl-stable-arguments.patch)
       run_checks="true"
       add_package "codex"
       ;;
