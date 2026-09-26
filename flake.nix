@@ -21,7 +21,7 @@
       # upstream codex tags require.
       inputs.rust-overlay.follows = "rust-overlay";
     };
-    hermes-agent.url = "github:NousResearch/hermes-agent/main";
+    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.9.24";
 
     # `rust-overlay` is consumed transitively via `codex.inputs.rust-overlay.overlays.default`
     # (see the `pkgsFor`/`overlays.default` blocks below). It must be declared as a direct

@@ -842,6 +842,23 @@ block_supabase_cli() {
 # Block: nix flake update. Captures stdout/stderr to a log file and requires a
 # zero exit status. run_block restores flake.lock if the command fails after a
 # partial write. Tagged as "flake_update".
+update_hermes_release_ref() {
+  local current_ref latest_ref
+  current_ref="$(perl -0ne 'print $1 if /hermes-agent\.url = "github:NousResearch\/hermes-agent\/([^"]+)";/' flake.nix)"
+  latest_ref="$(latest_release_tag NousResearch/hermes-agent)" || return 1
+  if [[ ! "$current_ref" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$ \
+     || ! "$latest_ref" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then
+    echo "Hermes requires stable dated release tags" >&2
+    return 1
+  fi
+  if [[ "$(printf '%s\n' "$current_ref" "$latest_ref" | sort -V | head -n 1)" != "$current_ref" ]]; then
+    echo "Refusing to downgrade Hermes from $current_ref to $latest_ref" >&2
+    return 1
+  fi
+  HERMES_RELEASE_REF="$latest_ref" perl -0pi -e \
+    's{(hermes-agent\.url = "github:NousResearch/hermes-agent/)[^"]+(";)}{$1.$ENV{HERMES_RELEASE_REF}.$2}e' flake.nix
+}
+
 block_flake_update() {
   local log rc
   local -a flake_inputs
@@ -870,6 +887,9 @@ block_flake_update() {
   # require a rustc release that the locked overlay does not know about. The
   # non-Codex lane updates Hermes alone because Codex and its toolchain were
   # already handled and published before that lane starts.
+  if [[ "$update_mode" != "codex-only" ]]; then
+    update_hermes_release_ref || { rm -f "$log"; return 1; }
+  fi
   nix flake update "${flake_inputs[@]}" >"$log" 2>&1 || rc=$?
 
   if [[ "$rc" -ne 0 ]]; then
@@ -986,7 +1006,7 @@ case "$update_mode" in
     run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
     run_block omp               block_omp               "$omp_package_file"
     run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
-    run_block flake_update      block_flake_update      flake.lock
+    run_block flake_update      block_flake_update      flake.lock flake.nix
     run_block codex_cargo_hashes block_codex_cargo_hashes flake.nix
     ;;
   codex-only)
@@ -1009,7 +1029,7 @@ case "$update_mode" in
   package)
     case "$selected_package" in
       hermes-agent)
-        run_block flake_update block_flake_update flake.lock
+        run_block flake_update block_flake_update flake.lock flake.nix
         ;;
       supabase-cli)
         run_block supabase_cli block_supabase_cli "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
@@ -1030,7 +1050,7 @@ case "$update_mode" in
     run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
     run_block omp               block_omp               "$omp_package_file"
     run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
-    run_block flake_update      block_flake_update      flake.lock
+    run_block flake_update      block_flake_update      flake.lock flake.nix
     ;;
 esac
 

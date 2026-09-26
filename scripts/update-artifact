@@ -34,6 +34,7 @@ PHASE_PATHS = {
     "github-cli": ("pkgs/github-cli/default.nix", "pkgs/github-cli/toolchain.json"),
     "camofox": ("pkgs/camofox-browser/default.nix",),
     "remaining": (
+        "flake.nix",
         "flake.lock",
         "pkgs/archon/default.nix",
         "pkgs/devspace/default.nix",
@@ -51,7 +52,7 @@ PHASE_PATHS = {
 for _package in PHASE_PACKAGES["remaining"]:
     PHASE_PACKAGES[_package] = {_package}
     PHASE_PATHS[_package] = (
-        ("flake.lock",) if _package == "hermes-agent"
+        ("flake.nix", "flake.lock") if _package == "hermes-agent"
         else tuple(path for path in PHASE_PATHS["remaining"]
                    if path.startswith(f"pkgs/{_package}/"))
     )
@@ -120,7 +121,7 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
 
     packages = set()
     for path in paths:
-        if path == "flake.lock":
+        if path in ("flake.nix", "flake.lock"):
             packages.add("hermes-agent")
         elif path == "pkgs/archon/default.nix":
             packages.add("archon")
@@ -170,10 +171,24 @@ def validate_staged_modes(paths: list[str]) -> None:
 
 
 def validate_hermes_lock(phase: str, base_sha: str) -> None:
+    if phase not in {"hermes-agent", "remaining"}:
+        return
+    before_flake = git("show", f"{base_sha}:flake.nix").decode()
+    after_flake = git("show", ":flake.nix").decode()
+    if before_flake != after_flake:
+        pattern = r'(?m)^(    hermes-agent\.url = "github:NousResearch/hermes-agent/)v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(";)$'
+        old, old_count = re.subn(pattern, r'\1<release>\2', before_flake)
+        new, new_count = re.subn(pattern, r'\1<release>\2', after_flake)
+        if old_count != 1 or new_count != 1 or old != new:
+            fail("Hermes artifact changes flake.nix outside its stable release pin")
     if phase != "hermes-agent":
         return
     before = json.loads(git("show", f"{base_sha}:flake.lock"))
     after = json.loads(git("show", ":flake.lock"))
+    if before == after:
+        if before_flake != after_flake:
+            fail("Hermes release pin changed without a matching lock update")
+        return
 
     def owned_nodes(lock: dict) -> set[str]:
         nodes = lock["nodes"]

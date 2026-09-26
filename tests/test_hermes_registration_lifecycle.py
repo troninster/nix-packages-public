@@ -14,6 +14,27 @@ HELPER = ROOT / "scripts" / "ensure-hermes-registration-lifecycle"
 
 
 class HermesRegistrationLifecycleTests(unittest.TestCase):
+    def test_stable_release_selection_rejects_rolling_and_downgrades(self):
+        script = (ROOT / "scripts/update-upstream-inputs").read_text()
+        selector = "update_hermes_release_ref() {" + script.split(
+            "update_hermes_release_ref() {", 1
+        )[1].split("\n}\n", 1)[0] + "\n}\n"
+        for latest, accepted in (("v2026.9.24", True), ("v2026.10.1", True),
+                                 ("v2026.9.14", False), ("main", False),
+                                 ("v2026.10.1-rc1", False)):
+            with self.subTest(latest=latest), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "flake.nix"
+                before = '    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.9.24";\n'
+                path.write_text(before)
+                result = subprocess.run(
+                    ["bash", "-euc", selector
+                     + f'latest_release_tag() {{ echo "{latest}"; }}\nupdate_hermes_release_ref'],
+                    cwd=tmp, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual(path.read_text(), before.replace("v2026.9.24", latest)
+                                 if accepted else before)
+
     def _fixture(
         self, root: Path, *, declared: bool, installed: str | None
     ) -> tuple[Path, Path]:
