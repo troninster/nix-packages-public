@@ -1,6 +1,6 @@
 {
-  "nixpkgs_rev": "4975466d324710c576dc11ad614684e6bd8cad8e",
-  "nixpkgs_hash": "sha256-xJ+X4hBtOcAFGBOe5nAMyMUeF9foJBmIOu3NjBqBycU=",
+  "nixpkgs_rev": "e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+  "nixpkgs_hash": "sha256-VVTPf+Hyd5ebpjBMHmrLMSBIeW6ls48Bqtosj7CNKLA=",
   "go_attr": "go_1_27",
   "go_version": "1.27.1"
 }
