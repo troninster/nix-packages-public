@@ -2,6 +2,7 @@
 set -euo pipefail
 
 update_mode="all"
+selected_package=""
 case "$#" in
   0)
     ;;
@@ -20,13 +21,29 @@ case "$#" in
         update_mode="camofox-only"
         ;;
       *)
-        echo "usage: $0 [--codex-only|--without-codex|--github-cli-only|--camofox-only]" >&2
+        echo "usage: $0 [--codex-only|--without-codex|--github-cli-only|--camofox-only|--package <name>]" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  2)
+    if [[ "$1" != "--package" ]]; then
+      echo "expected --package <name>" >&2
+      exit 2
+    fi
+    case "$2" in
+      archon|devspace|freellmapi|hermes-agent|notion-cli|omp|symphony-ts|supabase-cli)
+        update_mode="package"
+        selected_package="$2"
+        ;;
+      *)
+        echo "unsupported isolated package: $2" >&2
         exit 2
         ;;
     esac
     ;;
   *)
-    echo "usage: $0 [--codex-only|--without-codex|--github-cli-only|--camofox-only]" >&2
+    echo "usage: $0 [--codex-only|--without-codex|--github-cli-only|--camofox-only|--package <name>]" >&2
     exit 2
     ;;
 esac
@@ -842,6 +859,10 @@ block_flake_update() {
     without-codex)
       flake_inputs=(hermes-agent)
       ;;
+    package)
+      [[ "$selected_package" == "hermes-agent" ]] || return 1
+      flake_inputs=(hermes-agent)
+      ;;
   esac
 
   # The Codex lane also updates `rust-overlay`, which is wired in via
@@ -984,6 +1005,21 @@ case "$update_mode" in
     ;;
   camofox-only)
     run_block camofox           block_camofox           "$camofox_package_file"
+    ;;
+  package)
+    case "$selected_package" in
+      hermes-agent)
+        run_block flake_update block_flake_update flake.lock
+        ;;
+      supabase-cli)
+        run_block supabase_cli block_supabase_cli "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
+        ;;
+      *)
+        block="${selected_package//-/_}"
+        package_variable="${block}_package_file"
+        run_block "$block" "block_$block" "${!package_variable}"
+        ;;
+    esac
     ;;
   without-codex)
     # Camofox and GitHub CLI have their own transactions/builds/publishers.

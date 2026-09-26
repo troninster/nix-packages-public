@@ -46,6 +46,16 @@ PHASE_PATHS = {
     ),
 }
 
+# An isolated updater may publish only the files owned by its package. Keep the
+# aggregate phase for existing local callers, not for the scheduled workflow.
+for _package in PHASE_PACKAGES["remaining"]:
+    PHASE_PACKAGES[_package] = {_package}
+    PHASE_PATHS[_package] = (
+        ("flake.lock",) if _package == "hermes-agent"
+        else tuple(path for path in PHASE_PATHS["remaining"]
+                   if path.startswith(f"pkgs/{_package}/"))
+    )
+
 
 def fail(message: str) -> "NoReturn":
     raise SystemExit(f"update-artifact: {message}")
@@ -159,6 +169,46 @@ def validate_staged_modes(paths: list[str]) -> None:
                 fail(f"update artifact contains a non-regular Git mode at {path}")
 
 
+def validate_hermes_lock(phase: str, base_sha: str) -> None:
+    if phase != "hermes-agent":
+        return
+    before = json.loads(git("show", f"{base_sha}:flake.lock"))
+    after = json.loads(git("show", ":flake.lock"))
+
+    def owned_nodes(lock: dict) -> set[str]:
+        nodes = lock["nodes"]
+        root_inputs = nodes[lock["root"]]["inputs"]
+
+        def closure(ref: object, seen: set[str]) -> None:
+            # List references follow another root input and are shared, not
+            # owned by Hermes. Direct references introduce its locked subtree.
+            if not isinstance(ref, str) or ref in seen:
+                return
+            seen.add(ref)
+            for child in nodes[ref].get("inputs", {}).values():
+                closure(child, seen)
+
+        owned: set[str] = set()
+        shared: set[str] = set()
+        closure(root_inputs["hermes-agent"], owned)
+        for name, ref in root_inputs.items():
+            if name != "hermes-agent":
+                closure(ref, shared)
+        return owned - shared
+
+    if {k: v for k, v in before.items() if k != "nodes"} != {
+        k: v for k, v in after.items() if k != "nodes"
+    }:
+        fail("Hermes artifact changes shared lock metadata")
+    allowed = owned_nodes(before) | owned_nodes(after)
+    changed = {
+        name for name in before["nodes"].keys() | after["nodes"].keys()
+        if before["nodes"].get(name) != after["nodes"].get(name)
+    }
+    if not changed <= allowed:
+        fail("Hermes artifact changes lock nodes outside its input closure")
+
+
 def current_head() -> str:
     return git("rev-parse", "HEAD").decode().strip()
 
@@ -192,6 +242,7 @@ def create_artifact(phase: str, base_sha: str, packages_file: Path, output_dir: 
     if staged_paths != changed_paths:
         fail("staged update paths do not match the validated working-tree paths")
     validate_staged_modes(staged_paths)
+    validate_hermes_lock(phase, base_sha)
 
     patch = git("diff", "--cached", "--binary", "--full-index")
     if not patch:
@@ -271,6 +322,7 @@ def verify_and_apply(phase: str, base_sha: str, artifact_dir: Path) -> None:
     if staged_paths != paths:
         fail("applied patch paths do not match artifact metadata")
     validate_staged_modes(staged_paths)
+    validate_hermes_lock(phase, base_sha)
     if packages_for_paths(phase, staged_paths) != packages:
         fail("applied patch does not match changed-package metadata")
 

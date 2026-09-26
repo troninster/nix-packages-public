@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -65,6 +67,54 @@ class HermesRegistrationLifecycleTests(unittest.TestCase):
             result = self._run(source, site_packages)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("declares registration_lifecycle", result.stderr)
+
+    def test_site_packages_comes_from_the_built_environment(self) -> None:
+        assignment = next(
+            line.strip()
+            for line in (ROOT / "flake.nix").read_text().splitlines()
+            if line.strip().startswith("sitePackages=")
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self._fixture(root, declared=False, installed=None)
+            environment = root / "environment"
+            subprocess.run(
+                [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            result = subprocess.run(
+                [
+                    "bash", "-euc",
+                    assignment + '\nexec bash "$1" "$2" "$sitePackages"',
+                    "hermes-env-test", str(HELPER), str(source),
+                ],
+                env={**os.environ, "out": str(environment)},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed = subprocess.run(
+                [str(environment / "bin/python"), "-c",
+                 "import importlib.util; print(importlib.util.find_spec('registration_lifecycle').origin)"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            target = Path(installed.stdout.strip())
+            self.assertTrue(target.is_relative_to(environment))
+            self.assertEqual(target.read_text(), "source implementation\n")
+
+    def test_missing_site_packages_fails_without_creating_stale_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self._fixture(root, declared=False, installed=None)
+            stale_directory = root / "environment/lib/python3.12/site-packages"
+            result = self._run(source, stale_directory)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("site-packages directory is missing", result.stderr)
+            self.assertFalse(stale_directory.exists())
 
 
 if __name__ == "__main__":
