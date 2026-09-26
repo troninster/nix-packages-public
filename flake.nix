@@ -13,7 +13,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     codex = {
-      url = "github:openai/codex/rust-v0.155.1";
+      url = "github:openai/codex/rust-v0.157.1";
       # Route codex's transitive rust-overlay input through our own (declared below) so a
       # single `nix flake update rust-overlay` refreshes both. Otherwise codex stays pinned
       # to whatever rust-overlay rev its upstream flake.lock happened to record, and the
@@ -121,7 +121,9 @@
       });
     codexCargoOutputHashes = lib: {
       "appcontainer_common-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
-      "crossterm-0.29.0" = "sha256-cQxQQuV+YEutuQiPurXVISq6F/99vCEk8qe5PU8BCSo=";
+      "crossterm-0.29.0" = "sha256-0OFnAzKZOd5lNkvwdXPu5zbfDWBRQG80OruXxqrFklQ=";
+      "h3-0.0.8" = "sha256-fgE0AMj5d4iattTC/yQwnACV8uEu+KR7wD29xfEm8M0=";
+      "h3-quinn-0.0.10" = "sha256-fgE0AMj5d4iattTC/yQwnACV8uEu+KR7wD29xfEm8M0=";
       "learning_mode_core-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
       "learning_mode_windows-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
       "mxc_config_contract-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
@@ -211,6 +213,7 @@
 
       add_recursion_limit exec/src/lib.rs
       add_recursion_limit cli/src/main.rs
+      add_recursion_limit chatgpt/src/lib.rs
     '';
     codexPackageFor = pkgs: system:
       codex.packages.${system}.default.overrideAttrs (oldAttrs: {
@@ -222,7 +225,7 @@
           lockFile = "${codex}/codex-rs/Cargo.lock";
           outputHashes = codexCargoOutputHashes pkgs.lib;
         };
-        # Carry the recursion-limit fix into the required exec and cli crates.
+        # Carry the recursion-limit fix into the required exec, cli and chatgpt crates.
         # The source root is codex-rs.
         postPatch = (oldAttrs.postPatch or "") + ''
           ${codexRecursionLimitPatch}
