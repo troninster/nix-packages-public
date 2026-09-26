@@ -660,11 +660,12 @@ class CodexPackageContractTests(unittest.TestCase):
             ("partial-mcp", {"lib.rs": attribute}, False),
             ("missing-exec", {}, False),
             ("missing-cli", {}, False),
+            ("missing-chatgpt", {}, False),
         )
         for name, mcp_sources, succeeds in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
                 source = Path(temporary)
-                for crate, target in (("exec", "lib.rs"), ("cli", "main.rs")):
+                for crate, target in (("exec", "lib.rs"), ("cli", "main.rs"), ("chatgpt", "lib.rs")):
                     if name != f"missing-{crate}":
                         path = source / crate / "src" / target
                         path.parent.mkdir(parents=True)
@@ -682,7 +683,7 @@ class CodexPackageContractTests(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode == 0, succeeds, result.stderr)
                 if succeeds:
-                    for target in ("exec/src/lib.rs", "cli/src/main.rs"):
+                    for target in ("exec/src/lib.rs", "cli/src/main.rs", "chatgpt/src/lib.rs"):
                         self.assertEqual(
                             (source / target).read_text(), attribute + "// crate root\n"
                         )
@@ -751,7 +752,7 @@ class CodexPackageContractTests(unittest.TestCase):
             post_patch,
         )
 
-    def test_codex_post_patch_targets_exec_and_cli_with_shared_helper(self) -> None:
+    def test_codex_post_patch_targets_exec_cli_and_chatgpt_with_shared_helper(self) -> None:
         flake_source = (ROOT / "flake.nix").read_text()
         patch_start = flake_source.index("codexRecursionLimitPatch = ''")
         patch_end = flake_source.index("'';", patch_start)
@@ -759,6 +760,7 @@ class CodexPackageContractTests(unittest.TestCase):
         self.assertIn("add_recursion_limit()", helper)
         self.assertIn("add_recursion_limit exec/src/lib.rs", helper)
         self.assertIn("add_recursion_limit cli/src/main.rs", helper)
+        self.assertIn("add_recursion_limit chatgpt/src/lib.rs", helper)
         self.assertEqual(
             helper.count("grep -Fqx '#![recursion_limit = \"256\"]' \"$target\""),
             2,
