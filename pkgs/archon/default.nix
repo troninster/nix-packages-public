@@ -8,11 +8,11 @@
 
 stdenv.mkDerivation rec {
   pname = "archon";
-  version = "0.10.1";
+  version = "0.11.1";
 
   src = fetchurl {
     url = "https://github.com/coleam00/Archon/releases/download/v${version}/archon-linux-x64";
-    hash = "sha256-eqiyWksAF93bBa6tUYy9RTyo25xUrEp2EfQBZP7NOXM=";
+    hash = "sha256-ge5f6vTmyN4ZkDpsElJ0MijSNbvtuBjb7gRbId9J1Z0=";
   };
 
   dontUnpack = true;

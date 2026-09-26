@@ -7,18 +7,18 @@
 
 supabaseCliGoModule rec {
   pname = "supabase-cli";
-  version = "2.117.0";
+  version = "2.118.0";
 
   src = fetchFromGitHub {
     owner = "supabase";
     repo = "cli";
     rev = "v${version}";
-    hash = "sha256-rO02dr43J44XVic9w8yAOfbk+Pbsft5NmoV4/H+ESMI=";
+    hash = "sha256-Ir516ad8+L33VkmvrANJZsImrSTNHBhm2J7+tOY96UQ=";
   };
 
   sourceRoot = "source/apps/cli-go";
 
-  vendorHash = "sha256-FHnldsmzOwO3Lz+2xrY/IUN9J+KG2zPDP+Rbwty9eYI=";
+  vendorHash = "sha256-kkUfOaZTvrU8Mly6LrKM/8jd04deucNAWw+oPE1OD5E=";
 
   subPackages = [ "." ];
 
