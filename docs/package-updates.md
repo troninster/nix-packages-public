@@ -27,16 +27,20 @@ It updates:
 
 Only packages whose upstream pin changed are built. Codex is prepared and
 published in its own lane first. If Codex preparation or its build fails, the
-remaining lane still checks and builds independent upstreams such as Hermes; if
-Codex preparation succeeds, the remaining lane waits for its fail-closed
-publication before taking a fresh `main` snapshot. Each lane commits its pin
-update only after every changed package in that lane passes. The commit message
+remaining packages still check independent upstreams such as Hermes; if
+Codex preparation succeeds, they wait for its fail-closed publication.
+The remaining packages call `update-package.yml` with a sequential,
+`fail-fast: false` matrix. Each package takes a fresh `main` snapshot, runs
+`--package <name>`, builds only itself and publishes only its own validated
+patch. A failed package does not cancel the next package. Publication still
+rejects a changed remote base; it never rebases an unverified candidate.
+The commit message
 includes `[skip ci]` so the regular CI workflow does not rebuild packages after
 the targeted update.
 
 GitHub CLI release discovery, dependency-hash generation, build and publication
-run in a separate lane after the remaining publisher. `--without-codex` is the
-scheduled remaining lane and excludes GitHub CLI and Camofox discovery;
+run in a separate lane after the remaining package matrix. `--without-codex`
+remains an aggregate local mode, not the scheduled publication transaction;
 `--github-cli-only` updates `pkgs/github-cli/default.nix` and its data-only
 `toolchain.json` pin. A failed GitHub
 CLI candidate is rolled back and its job stays red, but earlier verified
@@ -50,6 +54,8 @@ cannot prevent earlier verified packages from publishing. The narrow artifact
 allows only `pkgs/camofox-browser/default.nix`; it cannot carry other package
 changes. Historical compatibility fixtures remain fixed, while live pin tests
 validate reproducibility rather than requiring an obsolete release number.
+The engine release tag and asset version are independent pins: upstream can
+publish a versioned archive under a tag such as `font-bundle-v1`.
 
 GitHub CLI owns an independently pinned Nixpkgs toolchain snapshot. Each poll
 checks both the release and `nixos-unstable`, selects the newest stable Go in
@@ -97,6 +103,9 @@ applies and the package still builds; it is not a host promotion channel. A
 downstream configuration can override the package input with a release-tagged
 Hermes input through `follows`, and remains on that selected Hermes pin and its
 own locked `nix-packages` revision until both are promoted and activated there.
+The registration-lifecycle patch discovers `site-packages` through the built
+Hermes environment's interpreter, so an upstream Python version change does
+not leave it writing into a hard-coded Python 3.12 directory.
 
 Oh My Pi is packaged from its official x86_64 Linux release asset with a fixed
 hash and exported as `omp`. The scheduled workflow updates only the
@@ -139,16 +148,19 @@ base and head commits before creating the package build matrix.
   `codex`, `hermes-agent`, or all packages when the repository `nixpkgs` input
   changed. A root `rust-overlay` change selects Codex, including its `follows`
   dependency edge.
-- `flake.nix` changes build all packages because it can alter package wiring,
-  overlays, or shared build arguments.
-- CI workflow and common build-script changes build all packages because they
-  can alter the build path for every package.
+- Literal Codex release/git-dependency/V8 hash changes in `flake.nix` build only
+  Codex. Other changes to that file still build all packages because they can
+  alter package wiring, overlays, or shared build arguments. Unknown pin shapes
+  fall back to all packages.
+- Common build-script changes build all packages. CI workflow/detector changes
+  run workflow checks; other changed paths determine package builds.
 - Upstream-update workflow and script changes build the packages managed by that
   workflow.
 - Documentation-only changes skip Nix evaluation and package builds, while the
   stable `CI result` job still reports success.
 
-Manual CI runs still build every package.
+Manual CI can select explicit `packages`, or `all=true` for every package.
+Without either selector it compares the latest two commits.
 
 ## Manual Fixed-Output Updates
 

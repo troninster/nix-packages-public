@@ -13,6 +13,11 @@ metadata_source="$source_root/pyproject.toml"
 registration_source="$source_root/registration_lifecycle.py"
 registration_target="$site_packages/registration_lifecycle.py"
 
+if [[ ! -d "$site_packages" ]]; then
+  echo "Hermes Python environment site-packages directory is missing: $site_packages" >&2
+  exit 1
+fi
+
 for source_path in "$plugins_source" "$metadata_source" "$registration_source"; do
   if [[ ! -f "$source_path" ]]; then
     echo "Hermes registration lifecycle source layout changed: $source_path" >&2

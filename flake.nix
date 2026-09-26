@@ -75,7 +75,8 @@
         baseVenv = package.passthru.hermesVenv;
         patchedVenv = baseVenv.overrideAttrs (oldAttrs: {
           postInstall = (oldAttrs.postInstall or "") + ''
-            sitePackages="$out/${pkgs.python312.sitePackages}"
+            # Hermes selects its interpreter from its own lock, not our nixpkgs.
+            sitePackages="$("$out/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
 
             copyPythonModule() {
               moduleDir="$sitePackages/$1"

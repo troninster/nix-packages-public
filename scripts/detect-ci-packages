@@ -178,6 +178,42 @@ classify_lock_changes() {
   fi
 }
 
+flake_changes_are_codex_pins() {
+  # Only ignore the literal pins written by update-codex-cargo-hashes and the
+  # release selector. Any packaging/code change still selects all consumers.
+  python3 - "$base" "$head" <<'PY'
+import re
+import subprocess
+import sys
+
+hash_value = r"sha256-[A-Za-z0-9+/]{43}="
+
+def projection(revision):
+    source = subprocess.check_output(["git", "show", f"{revision}:flake.nix"], text=True)
+    patterns = (
+        (r'(?m)(^    codex = \{\n      url = "github:openai/codex/)rust-v[0-9]+\.[0-9]+\.[0-9]+(";)',
+         r'\1<release>\2', 1),
+        (r'(?m)(^    codexCargoOutputHashes = lib: \{\n)'
+         r'(?:      "[A-Za-z0-9_.+-]+" = "' + hash_value + r'";\n)+'
+         r'(    \};)', r'\1<git dependency pins>\2', 1),
+        (r'(?m)(^      RUSTY_V8_(?:ARCHIVE|SRC_BINDING_PATH) = pkgs.fetchurl \{\n'
+         r'        url = "[^\n]+";\n        hash = ")' + hash_value +
+         r'(";\n      \};)', r'\1<artifact hash>\2', 2),
+    )
+    for pattern, replacement, expected in patterns:
+        source, count = re.subn(pattern, replacement, source)
+        if count != expected:
+            return None
+    return source
+
+try:
+    before, after = map(projection, sys.argv[1:])
+except (subprocess.CalledProcessError, UnicodeError):
+    sys.exit(1)
+sys.exit(0 if before is not None and before == after else 1)
+PY
+}
+
 classify_file() {
   local file="$1"
   local local_package
@@ -185,7 +221,11 @@ classify_file() {
   case "$file" in
     flake.nix)
       run_checks="true"
-      select_all_packages
+      if flake_changes_are_codex_pins; then
+        add_package "codex"
+      else
+        select_all_packages
+      fi
       ;;
     flake.lock)
       run_checks="true"
@@ -214,6 +254,12 @@ classify_file() {
     tools/camoufox-agent/*)
       run_checks="true"
       add_package "camoufox-agent"
+      ;;
+    .github/workflows/update-package.yml)
+      run_checks="true"
+      for local_package in archon devspace freellmapi hermes-agent notion-cli omp supabase-cli symphony-ts; do
+        add_package "$local_package"
+      done
       ;;
     .github/workflows/update-upstreams.yml | scripts/update-upstream-inputs)
       run_checks="true"
