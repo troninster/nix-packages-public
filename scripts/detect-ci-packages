@@ -214,6 +214,21 @@ sys.exit(0 if before is not None and before == after else 1)
 PY
 }
 
+flake_changes_are_hermes_pin() {
+  python3 - "$base" "$head" <<'PY'
+import re
+import subprocess
+import sys
+
+pattern = r'(?m)^(    hermes-agent\.url = "github:NousResearch/hermes-agent/)v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(";)$'
+before, after = [subprocess.check_output(["git", "show", f"{rev}:flake.nix"], text=True)
+                 for rev in sys.argv[1:]]
+old, old_count = re.subn(pattern, r'\1<release>\2', before)
+new, new_count = re.subn(pattern, r'\1<release>\2', after)
+sys.exit(0 if old_count == new_count == 1 and old == new else 1)
+PY
+}
+
 classify_file() {
   local file="$1"
   local local_package
@@ -223,6 +238,8 @@ classify_file() {
       run_checks="true"
       if flake_changes_are_codex_pins; then
         add_package "codex"
+      elif flake_changes_are_hermes_pin; then
+        add_package "hermes-agent"
       else
         select_all_packages
       fi

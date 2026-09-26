@@ -413,6 +413,7 @@ block_github_cli() {
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("original\n")
                 (repo / "flake.lock").write_text("original\n")
+                (repo / "flake.nix").write_text("original\n")
                 output = repo / "outputs"
                 result = subprocess.run(
                     ["bash", "-c", script, "updater-fixture", mode], cwd=repo,
@@ -459,6 +460,7 @@ block_camofox() { printf 'broken\\n' > "$camofox_package_file"; return 1; }
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("original\n")
                 (repo / "flake.lock").write_text("original\n")
+                (repo / "flake.nix").write_text("original\n")
                 output = repo / "outputs"
                 result = subprocess.run(["bash", "-c", script, "fixture", mode], cwd=repo,
                     env={**os.environ, "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
@@ -1701,6 +1703,9 @@ class PackageDetectorTests(unittest.TestCase):
         )
         cases = (
             ("pins", pins, ["codex"]),
+            ("hermes-pin", re.sub(r'github:NousResearch/hermes-agent/v[0-9.]+',
+                                   "github:NousResearch/hermes-agent/v2026.10.1", original),
+             ["hermes-agent"]),
             ("pins-and-packaging", pins.replace('CARGO_PROFILE_RELEASE_LTO = "false"',
                                                  'CARGO_PROFILE_RELEASE_LTO = "true"'),
              ["omp", "codex", "hermes-agent"]),
@@ -1893,6 +1898,35 @@ class PackageDetectorTests(unittest.TestCase):
 
 
 class UpdateArtifactTests(unittest.TestCase):
+    def test_hermes_release_artifact_cannot_change_other_flake_code(self) -> None:
+        flake = self.repo / "flake.nix"
+        lock_path = self.repo / "flake.lock"
+        before = '    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.9.14";\n'
+        flake.write_text(before)
+        lock = {"version": 7, "root": "root", "nodes": {
+            "root": {"inputs": {"hermes-agent": "hermes"}},
+            "hermes": {"locked": {"rev": "old"}},
+        }}
+        lock_path.write_text(json.dumps(lock))
+        self.git("add", "flake.nix", "flake.lock")
+        self.git("commit", "-qm", "stable Hermes fixture")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        for foreign_edit in (True, False):
+            self.reset_candidate()
+            flake.write_text(before.replace("v2026.9.14", "v2026.9.24")
+                             + ("foreign = true;\n" if foreign_edit else ""))
+            lock["nodes"]["hermes"]["locked"]["rev"] = "new"
+            lock_path.write_text(json.dumps(lock))
+            (self.repo / ".changed-packages").write_text("hermes-agent\n")
+            result = self.tool("create", "--phase", "hermes-agent", "--base-sha", self.base,
+                               "--packages-file", ".changed-packages", "--artifact-dir", str(self.artifact),
+                               check=False)
+            self.assertEqual(result.returncode == 0, not foreign_edit, result.stderr)
+        self.reset_candidate()
+        self.tool("verify-apply", "--phase", "hermes-agent", "--base-sha", self.base,
+                  "--artifact-dir", str(self.artifact))
+        self.assertEqual(flake.read_text(), before.replace("v2026.9.14", "v2026.9.24"))
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

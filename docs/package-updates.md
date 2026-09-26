@@ -10,8 +10,8 @@ It updates:
   x86_64 release asset hash.
 - `codex` by discovering the latest stable upstream `rust-v*` tag and updating
   `flake.nix` plus `flake.lock`.
-- `hermes-agent` by updating the locked revision of the upstream `main` input
-  as a compatibility signal for the declarative Hermes patch and package build.
+- `hermes-agent` by selecting the latest stable `vYYYY.M.D` release, updating
+  its flake URL and lock together, then building and publishing the patched package.
 - `camofox-browser` by updating the browser source pin and generated npm
   dependency hash.
 - `camoufox engine` by updating the Linux x86_64 release asset pin.
@@ -98,11 +98,11 @@ For an explicit remote reproducibility check, dispatch `ci.yml` with
 `nix build --rebuild` must match the first output byte-for-byte; it is not run
 by ordinary PR or upstream-update jobs.
 
-The Hermes `main` lock in this repository proves that the local patch still
-applies and the package still builds; it is not a host promotion channel. A
-downstream configuration can override the package input with a release-tagged
-Hermes input through `follows`, and remains on that selected Hermes pin and its
-own locked `nix-packages` revision until both are promoted and activated there.
+This repository owns the stable Hermes release pin and builds/cache-publishes
+the patched package before an automated update can land. Consumers should not
+override its Hermes input: consuming the same locked package recipe preserves
+cache identity. Host promotion still updates the public package input and
+verifies the private system candidate before human-confirmed activation.
 The registration-lifecycle patch discovers `site-packages` through the built
 Hermes environment's interpreter, so an upstream Python version change does
 not leave it writing into a hard-coded Python 3.12 directory.

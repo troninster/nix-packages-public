@@ -15,7 +15,7 @@ NixOS, Home Manager, or ad hoc `nix build` commands.
 - `devspace` - MCP server for approved local coding workspaces.
 - `freellmapi` - OpenAI-compatible proxy for free-tier LLM providers.
 - `github-cli` - GitHub command line tool.
-- `hermes-agent` - Hermes Agent from the upstream Hermes flake.
+- `hermes-agent` - Stable Hermes release with the declarative packaging patches.
 - `notion-cli` - Full-featured command line tool for Notion.
 - `omp` - Oh My Pi coding-agent CLI from the official Linux release asset.
 - `render-cli` - Render command line tool.
@@ -123,7 +123,7 @@ consuming NixOS machines. See `docs/binary-cache.md`.
 
 The `Update Upstreams` workflow runs every six hours and can also be started manually. It
 checks the latest Archon release asset, the latest Codex `rust-v*` release tag,
-the Hermes `main` input, the current `jo-inc/camofox-browser` default-branch
+the latest stable Hermes release, the current `jo-inc/camofox-browser` default-branch
 revision, and the latest `daijro/camoufox` Linux engine release asset, then
 builds only the packages whose upstream pins changed. Camofox local runtime
 patches are applied during the package build, so upstream drift fails in the
