@@ -37,6 +37,17 @@ The Codex package intentionally builds only the `codex` CLI and its required
 Rust workspace. The sandbox-enabled sidecar requires the matching official
 Codex rusty_v8 archive and source-binding pair for the Cargo.lock V8 version.
 
+The Nix entrypoint disables upstream `daemon_auto_start` using the supported
+CLI feature override. Ordinary interactive, resume and fork sessions use the
+embedded server, keeping the executable under Nix ownership. Codex 0.157.1's
+default daemon otherwise requires a standalone package manifest/resources and
+copies a separately auto-updated CLI into the user home. We deliberately do
+not seed that second installation. Explicit daemon-management/`agents`
+commands still require a separately managed server; explicit remote endpoints
+and the stdio `app-server` used by integrations are not disabled. The small
+wrapper reuses the Rust output and checks the effective startup feature during
+its build; `--version` is not sufficient startup coverage.
+
 Before a local machine consumes Codex, require the cached output:
 
 ```sh
