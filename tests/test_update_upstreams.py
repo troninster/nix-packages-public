@@ -820,7 +820,7 @@ class CodexPackageContractTests(unittest.TestCase):
                 self = {{}};
                 inherit (resolved.inputs) nixpkgs hermes-agent rust-overlay;
                 codex = syntheticCodex;
-              }}).packages.${{system}}.codex.postInstall;
+              }}).packages.${{system}}.codex.unwrapped.postInstall;
           in
           {{
             empty = compose "";

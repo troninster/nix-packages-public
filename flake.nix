@@ -216,7 +216,7 @@
       add_recursion_limit cli/src/main.rs
       add_recursion_limit chatgpt/src/lib.rs
     '';
-    codexPackageFor = pkgs: system:
+    codexUnwrappedFor = pkgs: system:
       codex.packages.${system}.default.overrideAttrs (oldAttrs: {
         env = (oldAttrs.env or {}) // (codexBuildEnv pkgs);
         cargoBuildFlags = (oldAttrs.cargoBuildFlags or []) ++ codexBuildFlags;
@@ -237,6 +237,10 @@
         '';
         postInstall = codexPostInstall (oldAttrs.postInstall or "");
       });
+    codexPackageFor = pkgs: system:
+      pkgs.callPackage ./pkgs/codex/package.nix {
+        unwrapped = codexUnwrappedFor pkgs system;
+      };
   in
   {
     packages = forAllSystems (system:
