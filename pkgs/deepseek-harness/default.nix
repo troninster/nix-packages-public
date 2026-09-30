@@ -142,6 +142,12 @@ stdenv.mkDerivation (finalAttrs: {
     substituteInPlace native/system/scripts/build.ts \
       --replace-fail "const headers = resolve(dirname(process.execPath), '../include/node')" \
         "const headers = '${lib.getDev nodejs_24}/include/node'"
+    # The native runtime probe cannot reach this Nix-built Node's internals.
+    # Match the vendored Loader's explicit --expose-internals mode; keep the
+    # original native path for other launchers and all upstream shape checks.
+    substituteInPlace packages/boot/app-boot/src/profile-resolution/resolver.ts \
+      --replace-fail "const addon = require('node-addon-require-builtin') as { requireBuiltin(moduleId: string): unknown }" \
+        "const addon = process.execArgv.includes('--expose-internals') ? { requireBuiltin: require } : require('node-addon-require-builtin') as { requireBuiltin(moduleId: string): unknown }"
   '';
 
   buildPhase = ''
@@ -190,7 +196,7 @@ stdenv.mkDerivation (finalAttrs: {
       "$out/lib/deepseek-harness/snapshots/acp/escalation-approved/"
 
     makeWrapper ${nodejs_24}/bin/node "$out/bin/dsh" \
-      --add-flags "$out/lib/deepseek-harness/apps/cli/lib/bin.js" \
+      --add-flags "--expose-internals $out/lib/deepseek-harness/apps/cli/lib/bin.js" \
       --prefix PATH : ${lib.makeBinPath [ bash bubblewrap gitMinimal pnpm11 ripgrep xdg-utils ]}
 
     mkdir -p "$out/share/applications"
