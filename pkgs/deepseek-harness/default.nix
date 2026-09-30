@@ -74,13 +74,37 @@ stdenv.mkDerivation (finalAttrs: {
     hash = "sha256-ZtO+bdoYbIkIgLTge5Eh7KYwTVh8FpFAAvx58dSY1PI=";
   };
 
-  pnpmDepsHash = "sha256-mJVzKGfdM16Oh3tg9oF7nk/xM9mQzzwM22qFZb+yu+U=";
+  pnpmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   pnpmInstallFlags = [ "--force=false" ];
   pnpmDeps = pnpmHooks.fetchPnpmDeps {
     inherit (finalAttrs) pname version src pnpmInstallFlags;
     fetcherVersion = 4;
     hash = finalAttrs.pnpmDepsHash;
+    # Verify the original lockfile's supply-chain policy online in the FOD.
+    # Only its native byHash proof belongs in the immutable snapshot; registry
+    # metadata and other mutable cache contents stay in the temporary directory.
+    prePnpmInstall = ''
+      export pnpm_config_cache_dir="$(mktemp -d)"
+      cp pnpm-lock.yaml "$pnpm_config_cache_dir/input-lock.yaml"
+      cp pnpm-workspace.yaml "$pnpm_config_cache_dir/input-workspace.yaml"
+    '';
+    postInstall = ''
+      cmp pnpm-lock.yaml "$pnpm_config_cache_dir/input-lock.yaml"
+      cmp pnpm-workspace.yaml "$pnpm_config_cache_dir/input-workspace.yaml"
+      ${nodejs_24}/bin/node ${./normalize-policy-cache.mjs} \
+        "$pnpm_config_cache_dir/lockfile-verified.jsonl" "$PWD/pnpm-lock.yaml" \
+        "$storePath/lockfile-verified.jsonl"
+    '';
   };
+
+  prePnpmInstall = ''
+    if [ ! -s "$STORE_PATH/lockfile-verified.jsonl" ]; then
+      echo "Missing pnpm online lockfile verification proof" >&2
+      exit 1
+    fi
+    export pnpm_config_cache_dir="$(mktemp -d)"
+    cp "$STORE_PATH/lockfile-verified.jsonl" "$pnpm_config_cache_dir/lockfile-verified.jsonl"
+  '';
 
   nativeBuildInputs = [
     autoPatchelfHook
