@@ -145,7 +145,7 @@ stdenv.mkDerivation (finalAttrs: {
     # client assets and native packages resolve through its workspace links.
     mkdir -p "$out/lib/deepseek-harness"
     cp -R apps packages vendor native node_modules package.json \
-      pnpm-workspace.yaml pnpm-lock.yaml "$out/lib/deepseek-harness/"
+      pnpm-workspace.yaml pnpm-lock.yaml LICENSE "$out/lib/deepseek-harness/"
 
     makeWrapper ${nodejs_24}/bin/node "$out/bin/dsh" \
       --add-flags "$out/lib/deepseek-harness/apps/cli/lib/bin.js" \
@@ -174,6 +174,7 @@ stdenv.mkDerivation (finalAttrs: {
     ${nodejs_24}/bin/node --input-type=module -e \
       "import { createRequire } from 'node:module'; const require = createRequire('$out/lib/deepseek-harness/packages/subprocess/subprocess-local/package.json'); require('node-pty'); require('koffi');"
     test ! -e "$DSH_HOME"
+    ${nodejs_24}/bin/node ${./web-smoke.mjs} "$out/bin/dsh" "$TMPDIR"
     runHook postInstallCheck
   '';
 

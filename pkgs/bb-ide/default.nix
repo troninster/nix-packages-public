@@ -93,18 +93,19 @@ stdenv.mkDerivation (finalAttrs: {
 
   installPhase = ''
     runHook preInstall
-    pnpm --filter bb-app deploy --prod --offline --ignore-scripts "$out/share/bb/runtime"
-    pushd "$out/share/bb/runtime"
-    pnpm rebuild better-sqlite3 node-pty fs-native-extensions @parcel/watcher
-    popd
+    # pnpm 9 deploy reinjects workspace dependencies and ignores the lockfile.
+    # Preserve the already-built frozen closure and its relative workspace links.
+    mkdir -p "$out/share/bb/runtime"
+    cp -R apps packages plugins node_modules package.json pnpm-workspace.yaml pnpm-lock.yaml LICENSE \
+      "$out/share/bb/runtime/"
     mkdir -p "$out/share/bb/desktop/node_modules" "$out/share/icons/hicolor/512x512/apps"
     cp -r apps/desktop/dist apps/desktop/assets apps/desktop/package.json "$out/share/bb/desktop/"
-    ln -s ../../runtime "$out/share/bb/desktop/node_modules/bb-app"
+    ln -s ../../runtime/packages/bb-app "$out/share/bb/desktop/node_modules/bb-app"
     cp apps/desktop/assets/icon.png "$out/share/icons/hicolor/512x512/apps/bb-ide.png"
 
     for name in bb bb-app bb-server bb-host-daemon; do
       makeWrapper ${nodejs_24}/bin/node "$out/bin/$name" \
-        --add-flags "$out/share/bb/runtime/dist/$name.js" \
+        --add-flags "$out/share/bb/runtime/packages/bb-app/dist/$name.js" \
         --set NODE_ENV production --set BB_TELEMETRY false \
         --prefix PATH : ${lib.makeBinPath [ nodejs_24 bash gitMinimal ]}
     done
@@ -134,8 +135,8 @@ stdenv.mkDerivation (finalAttrs: {
       load("node-pty");
       load("@parcel/watcher");
       load("fs-native-extensions");
-    ' "$out/share/bb/runtime/package.json"
-    test -f "$out/share/bb/runtime/app/dist/index.html"
+    ' "$out/share/bb/runtime/packages/bb-app/package.json"
+    test -f "$out/share/bb/runtime/packages/bb-app/app/dist/index.html"
     test -f "$out/share/bb/desktop/dist/preload.cjs"
     test -f "$out/share/bb/desktop/dist/bb-app-bridge.mjs"
     runHook postInstallCheck
