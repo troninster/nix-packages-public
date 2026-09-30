@@ -94,6 +94,8 @@ stdenv.mkDerivation (finalAttrs: {
   ];
   buildInputs = [ stdenv.cc.cc.lib ];
   NODE_OPTIONS = "--max-old-space-size=3072";
+  # Source archives have no Git metadata; use upstream's provenance override.
+  DSH_CLIENT_COMMIT_HASH = finalAttrs.src.rev;
 
   # pnpm's hook installs the immutable lock closure without lifecycle scripts.
   # Rebuild the required native dependencies explicitly without registry access;
