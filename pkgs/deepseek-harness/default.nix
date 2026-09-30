@@ -44,9 +44,13 @@ let
       runHook postInstall
     '';
   };
-  pnpmFixupStateDb = callPackage ./nixpkgs-pnpm11/pnpm-fixup-state-db/package.nix {
+  pnpmFixupStateDb = (callPackage ./nixpkgs-pnpm11/pnpm-fixup-state-db/package.nix {
     nodejs = nodejs_24;
     pnpm = pnpm11;
+  }).overrideAttrs {
+    # The pinned npmConfigHook needs npmDeps exported to its Rust cache mapper.
+    # Its older hook does not export structured attributes to subprocesses.
+    __structuredAttrs = false;
   };
   pnpmHooks = callPackage ./nixpkgs-pnpm11/fetch-pnpm-deps {
     pnpm = pnpm11;

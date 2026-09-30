@@ -27,7 +27,7 @@ stdenv.mkDerivation (finalAttrs: {
     hash = "sha256-VSjlOYnNsamHaSlLMuqKM+seA0gA2llGJGA4P+mGHW8=";
   };
 
-  pnpmDepsHash = lib.fakeHash;
+  pnpmDepsHash = "sha256-P4+vo3XatSCqJgnmOg8/bYvi6Sfm+bBT1PWn/1o0bHg=";
   electronVersion = "44.3.0";
   electronHash = "sha256-i0m5791zwPRn7cPBzVZ4OSw4TM8iTzT/VBefc24vOEs=";
   electronRuntime = electron_39-bin.overrideAttrs (old: {
