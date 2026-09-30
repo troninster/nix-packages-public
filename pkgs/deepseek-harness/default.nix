@@ -180,8 +180,14 @@ stdenv.mkDerivation (finalAttrs: {
     # Keep the upstream workspace topology: profile bundles, generated contracts,
     # client assets and native packages resolve through its workspace links.
     mkdir -p "$out/lib/deepseek-harness"
-    cp -R apps packages vendor native node_modules package.json \
+    cp -R apps packages vendor native benchmarks website node_modules package.json \
       pnpm-workspace.yaml pnpm-lock.yaml LICENSE "$out/lib/deepseek-harness/"
+    mkdir -p "$out/lib/deepseek-harness/python" \
+      "$out/lib/deepseek-harness/snapshots/acp/escalation-approved"
+    cp -R python/sdk-runtime "$out/lib/deepseek-harness/python/"
+    # The retained CLI test profile links to this exact upstream config.
+    cp snapshots/acp/escalation-approved/cordis.yml \
+      "$out/lib/deepseek-harness/snapshots/acp/escalation-approved/"
 
     makeWrapper ${nodejs_24}/bin/node "$out/bin/dsh" \
       --add-flags "$out/lib/deepseek-harness/apps/cli/lib/bin.js" \
