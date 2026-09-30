@@ -2,6 +2,7 @@
   autoPatchelfHook,
   bash,
   bubblewrap,
+  callPackage,
   cmake,
   fetchFromGitHub,
   gitMinimal,
@@ -14,13 +15,14 @@
   python3,
   ripgrep,
   stdenv,
+  stdenvNoCC,
   xdg-utils,
   ...
 }:
 
 let
   # The upstream workspace uses pnpm 11; the collection's older nixpkgs only
-  # supplies pnpm 10. Keep the package manager and its dependency hook together.
+  # supplies pnpm 10. Use the matching upstream SQLite-aware dependency hooks.
   pnpmVersion = "11.7.0";
   pnpmHash = "sha256-3q+n7JihIYtqBHKJuS++I5XB4i00lbtxFlMBMhjuFe4=";
   pnpm11 = (pnpm_10.override {
@@ -42,6 +44,20 @@ let
       runHook postInstall
     '';
   };
+  pnpmFixupStateDb = callPackage ./nixpkgs-pnpm11/pnpm-fixup-state-db/package.nix {
+    nodejs = nodejs_24;
+    pnpm = pnpm11;
+  };
+  pnpmHooks = callPackage ./nixpkgs-pnpm11/fetch-pnpm-deps {
+    pnpm = pnpm11;
+    pnpm-fixup-state-db = pnpmFixupStateDb;
+    # The older platform schema lacks `node`; this package supports x86_64-linux.
+    stdenvNoCC = stdenvNoCC // {
+      targetPlatform = stdenvNoCC.targetPlatform // {
+        node = { arch = "x64"; platform = "linux"; };
+      };
+    };
+  };
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "deepseek-harness";
@@ -56,9 +72,9 @@ stdenv.mkDerivation (finalAttrs: {
 
   pnpmDepsHash = lib.fakeHash;
   pnpmInstallFlags = [ "--force=false" ];
-  pnpmDeps = pnpm11.fetchDeps {
+  pnpmDeps = pnpmHooks.fetchPnpmDeps {
     inherit (finalAttrs) pname version src pnpmInstallFlags;
-    fetcherVersion = 2;
+    fetcherVersion = 4;
     hash = finalAttrs.pnpmDepsHash;
   };
 
@@ -68,7 +84,8 @@ stdenv.mkDerivation (finalAttrs: {
     makeWrapper
     ninja
     nodejs_24
-    pnpm11.configHook
+    pnpm11
+    pnpmHooks.pnpmConfigHook
     python3
   ];
   buildInputs = [ stdenv.cc.cc.lib ];

@@ -30,12 +30,20 @@ stdenv.mkDerivation (finalAttrs: {
   pnpmDepsHash = lib.fakeHash;
   electronVersion = "44.3.0";
   electronHash = "sha256-i0m5791zwPRn7cPBzVZ4OSw4TM8iTzT/VBefc24vOEs=";
-  electronRuntime = electron_39-bin.overrideAttrs (_: {
+  electronRuntime = electron_39-bin.overrideAttrs (old: {
     version = finalAttrs.electronVersion;
     src = fetchurl {
       url = "https://github.com/electron/electron/releases/download/v${finalAttrs.electronVersion}/electron-v${finalAttrs.electronVersion}-linux-x64.zip";
       hash = finalAttrs.electronHash;
     };
+    # Electron 44 no longer ships separate ANGLE libraries.
+    postFixup = lib.replaceStrings
+      [ "# patch libANGLE" "$out/libexec/electron/lib*GL*" ]
+      [
+        "if compgen -G \"$out/libexec/electron/lib*GL*\" > /dev/null; then\n# patch libANGLE"
+        "$out/libexec/electron/lib*GL*\nfi"
+      ]
+      old.postFixup;
   });
 
   pnpmWorkspaces = [
