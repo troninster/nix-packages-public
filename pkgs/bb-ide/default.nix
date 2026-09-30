@@ -76,7 +76,7 @@ stdenv.mkDerivation (finalAttrs: {
   buildPhase = ''
     runHook preBuild
     autoPatchelf node_modules
-    pnpm --recursive --workspace-concurrency=1 rebuild better-sqlite3 node-pty fs-native-extensions @parcel/watcher esbuild
+    pnpm --recursive rebuild better-sqlite3 node-pty fs-native-extensions @parcel/watcher esbuild
     pnpm exec turbo run build --filter=bb-app --filter=@bb/desktop --concurrency=1 --env-mode=loose
     runHook postBuild
   '';
