@@ -74,7 +74,7 @@ stdenv.mkDerivation (finalAttrs: {
     hash = "sha256-ZtO+bdoYbIkIgLTge5Eh7KYwTVh8FpFAAvx58dSY1PI=";
   };
 
-  pnpmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  pnpmDepsHash = "sha256-U1oY4RI85iuBsZieVDqKyEAc9/CabQU+q6CgG8m4vRk=";
   pnpmInstallFlags = [ "--force=false" ];
   pnpmDeps = pnpmHooks.fetchPnpmDeps {
     inherit (finalAttrs) pname version src pnpmInstallFlags;
