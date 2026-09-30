@@ -7,8 +7,10 @@
   fetchFromGitHub,
   gitMinimal,
   lib,
+  libxkbcommon,
   makeDesktopItem,
   makeWrapper,
+  ncurses,
   ninja,
   nodejs_24,
   pnpm_10,
@@ -17,6 +19,7 @@
   stdenv,
   stdenvNoCC,
   xdg-utils,
+  xorg,
   ...
 }:
 
@@ -116,7 +119,16 @@ stdenv.mkDerivation (finalAttrs: {
     pnpmHooks.pnpmConfigHook
     python3
   ];
-  buildInputs = [ stdenv.cc.cc.lib ];
+  buildInputs = [
+    stdenv.cc.cc.lib
+    xorg.libX11
+    xorg.libXi
+    libxkbcommon
+    ncurses
+  ];
+  # Optional musl variants are not loaded on this glibc host. Every other
+  # missing dependency remains fatal; the active addons are smoke-tested.
+  autoPatchelfIgnoreMissingDeps = [ "libc.musl-x86_64.so.1" ];
   # CMake is used by Koffi, not as the workspace's top-level build system.
   dontUseCmakeConfigure = true;
   NODE_OPTIONS = "--max-old-space-size=3072";
