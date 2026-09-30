@@ -274,7 +274,7 @@ classify_file() {
       ;;
     .github/workflows/update-package.yml)
       run_checks="true"
-      for local_package in archon devspace freellmapi hermes-agent notion-cli omp supabase-cli symphony-ts; do
+      for local_package in archon bb-ide deepseek-harness devspace freellmapi hermes-agent notion-cli omp supabase-cli symphony-ts; do
         add_package "$local_package"
       done
       ;;
@@ -289,6 +289,8 @@ classify_file() {
       add_package "hermes-agent"
       add_package "notion-cli"
       add_package "omp"
+      add_package "bb-ide"
+      add_package "deepseek-harness"
       add_package "supabase-cli"
       add_package "symphony-ts"
       ;;

@@ -27,6 +27,8 @@ PHASE_PACKAGES = {
         "omp",
         "symphony-ts",
         "supabase-cli",
+        "bb-ide",
+        "deepseek-harness",
     },
 }
 PHASE_PATHS = {
@@ -44,6 +46,8 @@ PHASE_PATHS = {
         "pkgs/symphony-ts/default.nix",
         "pkgs/supabase-cli/default.nix",
         "pkgs/supabase-cli/toolchain.json",
+        "pkgs/bb-ide/default.nix",
+        "pkgs/deepseek-harness/default.nix",
     ),
 }
 
@@ -141,6 +145,10 @@ def packages_for_paths(phase: str, paths: list[str]) -> list[str]:
             packages.add("symphony-ts")
         elif path in ("pkgs/supabase-cli/default.nix", "pkgs/supabase-cli/toolchain.json"):
             packages.add("supabase-cli")
+        elif path == "pkgs/bb-ide/default.nix":
+            packages.add("bb-ide")
+        elif path == "pkgs/deepseek-harness/default.nix":
+            packages.add("deepseek-harness")
     return sorted(packages)
 
 

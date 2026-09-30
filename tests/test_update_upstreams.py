@@ -109,6 +109,114 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         cls.updater = UPDATER.read_text()
         cls.detector = PACKAGE_DETECTOR.read_text()
 
+    def test_new_pnpm_packages_refresh_runtime_pins_and_only_fetch_dependencies(self) -> None:
+        helpers = self.updater[self.updater.index("nix_string_value() {"):self.updater.index("latest_git_head() {")]
+        discovery = self.updater[self.updater.index("discover_nix_fixed_hash() {"):self.updater.index("update_tagged_go_package() {")]
+        update = self.updater[self.updater.index("update_pnpm_source_package() {"):self.updater.index("block_bb_ide() {")]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            for package, manager, runtime, version_path in (
+                ("bb-ide", "pnpm@9.15.0", 'electronVersion = "44.2.0";\nelectronHash = "sha256-old=";\n', "packages/bb-app/package.json"),
+                ("deepseek-harness", "pnpm@11.8.0", 'pnpmVersion = "11.7.0";\npnpmHash = "sha256-old=";\n', "apps/cli/package.json"),
+            ):
+                with self.subTest(package=package):
+                    (source / "package.json").write_text(json.dumps({"packageManager": manager}))
+                    version_file = source / version_path
+                    version_file.parent.mkdir(parents=True, exist_ok=True)
+                    version_file.write_text(json.dumps({"version": "0.2.0-rc.3"}))
+                    electron_file = source / "apps/desktop/package.json"
+                    electron_file.parent.mkdir(parents=True, exist_ok=True)
+                    electron_file.write_text(json.dumps({"devDependencies": {"electron": "44.3.0"}}))
+                    package_file = root / "default.nix"
+                    package_file.write_text('version = "0.1.0";\nrev = "' + "a" * 40 + '";\nhash = "sha256-old=";\npnpmDepsHash = "sha256-old=";\n' + runtime)
+                    commands = root / "commands"
+                    commands.write_text("")
+                    prefetch = json.dumps({"hash": "sha256-" + "B" * 43 + "=", "storePath": str(source)}, separators=(",", ":"))
+                    result = subprocess.run(["bash", "-c", f'''
+set -euo pipefail
+{helpers}
+{discovery}
+{update}
+prefetch_json() {{ printf '%s %s\\n' "$1" "$2" >> {shlex.quote(str(commands))}; printf '%s' {shlex.quote(prefetch)}; }}
+nix() {{ printf '%s\\n' "$*" >> {shlex.quote(str(commands))}; printf '%s\\n' ' got: sha256-{'C' * 43}=' >&2; return 1; }}
+update_pnpm_source_package {package} {shlex.quote(str(package_file))} fixture/repo {'b' * 40} {version_path}
+'''], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    after = package_file.read_text()
+                    self.assertIn('version = "0.2.0-rc.3";', after)
+                    self.assertIn('rev = "' + "b" * 40 + '";', after)
+                    self.assertIn('pnpmDepsHash = "sha256-' + "C" * 43 + '=";', after)
+                    log = commands.read_text()
+                    self.assertIn(f"build .#{package}.pnpmDeps --no-link --cores 1 --max-jobs 1", log)
+                    self.assertNotIn(f"build .#{package} --", log)
+                    if package == "bb-ide":
+                        self.assertIn('electronVersion = "44.3.0";', after)
+                        self.assertIn("false https://github.com/electron/electron/releases/download/v44.3.0/", log)
+                    else:
+                        self.assertIn('pnpmVersion = "11.8.0";', after)
+                        self.assertIn("false https://registry.npmjs.org/pnpm/-/pnpm-11.8.0.tgz", log)
+
+    def test_failed_pnpm_dependency_fetch_restores_the_entire_package_transaction(self) -> None:
+        helpers = self.updater[self.updater.index("nix_string_value() {"):self.updater.index("latest_git_head() {")]
+        discovery = self.updater[self.updater.index("discover_nix_fixed_hash() {"):self.updater.index("update_tagged_go_package() {")]
+        update = self.updater[self.updater.index("update_pnpm_source_package() {"):self.updater.index("block_bb_ide() {")]
+        transaction = self.updater[self.updater.index("run_block() {"):self.updater.index("lock_fingerprint() {")]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "package.json").write_text(json.dumps({"packageManager": "pnpm@9.15.0"}))
+            (root / "app.json").write_text(json.dumps({"version": "0.2.0"}))
+            (root / "apps/desktop").mkdir(parents=True)
+            (root / "apps/desktop/package.json").write_text(json.dumps({"devDependencies": {"electron": "44.3.0"}}))
+            package = root / "default.nix"
+            original = 'version = "0.1.0";\nrev = "' + "a" * 40 + '";\nhash = "sha256-old=";\npnpmDepsHash = "sha256-old=";\nelectronVersion = "44.3.0";\nelectronHash = "sha256-old=";\n'
+            package.write_text(original)
+            prefetch = json.dumps({"hash": "sha256-" + "B" * 43 + "=", "storePath": str(root)}, separators=(",", ":"))
+            result = subprocess.run(["bash", "-c", f'''
+set -euo pipefail
+declare -A block_status=()
+{helpers}
+{discovery}
+{update}
+{transaction}
+prefetch_json() {{ printf '%s' {shlex.quote(prefetch)}; }}
+nix() {{ return 1; }}
+fixture_block() {{ update_pnpm_source_package bb-ide {shlex.quote(str(package))} fixture/repo {'b' * 40} app.json; }}
+run_block bb_ide fixture_block {shlex.quote(str(package))}
+test "${{block_status[bb_ide]}}" = FAILED
+'''], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(package.read_text(), original)
+
+    def test_harness_release_selection_includes_prereleases_but_excludes_drafts(self) -> None:
+        block = self.updater[self.updater.index("block_deepseek_harness() {"):self.updater.index("block_symphony_ts() {")]
+        releases = json.dumps([
+            {"tag_name": "dsh-v0.3.0-rc.1", "draft": True, "published_at": "2026-10-01"},
+            {"tag_name": "dsh-v0.2.0-rc.2", "prerelease": True, "published_at": "2026-09-30"},
+            {"tag_name": "other-v4.0.0", "published_at": "2026-10-02"},
+            {"tag_name": "dsh-v0.2.0-rc.1", "prerelease": True, "published_at": "2026-09-29"},
+        ])
+        result = subprocess.run(["bash", "-c", f'''
+set -euo pipefail
+{block}
+deepseek_harness_package_file=fixture.nix
+github_api_get() {{ printf '%s' {shlex.quote(releases)}; }}
+tag_commit() {{ test "$2" = dsh-v0.2.0-rc.2; printf '%s' {'a' * 40}; }}
+update_pnpm_source_package() {{ printf '%s\\n' "$*"; }}
+block_deepseek_harness
+'''], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("deepseek-harness fixture.nix deepseek-ai/deepseek-harness " + "a" * 40, result.stdout)
+
+    def test_new_package_publication_lanes_reject_collateral_paths(self) -> None:
+        artifact = runpy.run_path(str(ARTIFACT_TOOL))
+        for package, other in (("bb-ide", "deepseek-harness"), ("deepseek-harness", "bb-ide")):
+            with self.subTest(package=package):
+                self.assertEqual(artifact["packages_for_paths"](package, [f"pkgs/{package}/default.nix"]), [package])
+                with self.assertRaises(SystemExit):
+                    artifact["packages_for_paths"](package, [f"pkgs/{other}/default.nix"])
+
     def test_github_cli_uses_its_pinned_toolchain_in_packages_and_overlay(self) -> None:
         flake = (ROOT / "flake.nix").read_text()
         package = (ROOT / "pkgs/github-cli/default.nix").read_text()
@@ -480,6 +588,8 @@ block_camofox() { printf 'broken\\n' > "$camofox_package_file"; return 1; }
             "github_cli",
             "notion_cli",
             "omp",
+            "bb_ide",
+            "deepseek_harness",
             "supabase_cli",
         )
         for block in expected_blocks:
@@ -503,6 +613,8 @@ block_camofox() { printf 'broken\\n' > "$camofox_package_file"; return 1; }
             "github_cli": ("block_github_cli", "$github_cli_package_file"),
             "notion_cli": ("block_notion_cli", "$notion_cli_package_file"),
             "omp": ("block_omp", "$omp_package_file"),
+            "bb_ide": ("block_bb_ide", "$bb_ide_package_file"),
+            "deepseek_harness": ("block_deepseek_harness", "$deepseek_harness_package_file"),
             "supabase_cli": ("block_supabase_cli", "$supabase_cli_package_file"),
             "flake_update": ("block_flake_update", "flake.lock"),
         }
@@ -575,6 +687,8 @@ declare -A block_status=([github_cli]=FAILED [camofox]=OK)
             "hermes-agent",
             "notion-cli",
             "omp",
+            "bb-ide",
+            "deepseek-harness",
             "supabase-cli",
             "symphony-ts",
         )

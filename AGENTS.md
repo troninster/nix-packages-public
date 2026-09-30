@@ -23,10 +23,12 @@ This repository is a standalone Nix package collection.
 ## Current Packages
 
 - `archon`
+- `bb-ide`
 - `camofox-browser`
 - `camoufox-agent`
 - `codex`
 - `devspace`
+- `deepseek-harness`
 - `freellmapi`
 - `github-cli`
 - `hermes-agent`

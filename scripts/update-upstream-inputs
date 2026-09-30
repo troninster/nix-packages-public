@@ -32,7 +32,7 @@ case "$#" in
       exit 2
     fi
     case "$2" in
-      archon|devspace|freellmapi|hermes-agent|notion-cli|omp|symphony-ts|supabase-cli)
+      archon|devspace|freellmapi|hermes-agent|notion-cli|omp|symphony-ts|supabase-cli|bb-ide|deepseek-harness)
         update_mode="package"
         selected_package="$2"
         ;;
@@ -58,6 +58,8 @@ github_cli_package_file="pkgs/github-cli/default.nix"
 github_cli_toolchain_file="pkgs/github-cli/toolchain.json"
 notion_cli_package_file="pkgs/notion-cli/default.nix"
 omp_package_file="pkgs/omp/default.nix"
+bb_ide_package_file="pkgs/bb-ide/default.nix"
+deepseek_harness_package_file="pkgs/deepseek-harness/default.nix"
 supabase_cli_package_file="pkgs/supabase-cli/default.nix"
 supabase_cli_toolchain_file="pkgs/supabase-cli/toolchain.json"
 before_lock="$(mktemp)"
@@ -70,10 +72,12 @@ before_github_cli_package="$(mktemp)"
 before_github_cli_toolchain="$(mktemp)"
 before_notion_cli_package="$(mktemp)"
 before_omp_package="$(mktemp)"
+before_bb_ide_package="$(mktemp)"
+before_deepseek_harness_package="$(mktemp)"
 before_supabase_cli_package="$(mktemp)"
 before_supabase_cli_toolchain="$(mktemp)"
 codex_tags="$(mktemp)"
-trap 'rm -f "$before_lock" "$before_archon_package" "$before_camofox_package" "$before_symphony_ts_package" "$before_devspace_package" "$before_freellmapi_package" "$before_github_cli_package" "$before_github_cli_toolchain" "$before_notion_cli_package" "$before_omp_package" "$before_supabase_cli_package" "$before_supabase_cli_toolchain" "$codex_tags"' EXIT
+trap 'rm -f "$before_lock" "$before_archon_package" "$before_camofox_package" "$before_symphony_ts_package" "$before_devspace_package" "$before_freellmapi_package" "$before_github_cli_package" "$before_github_cli_toolchain" "$before_notion_cli_package" "$before_omp_package" "$before_bb_ide_package" "$before_deepseek_harness_package" "$before_supabase_cli_package" "$before_supabase_cli_toolchain" "$codex_tags"' EXIT
 
 cp flake.lock "$before_lock"
 cp "$archon_package_file" "$before_archon_package"
@@ -85,6 +89,8 @@ cp "$github_cli_package_file" "$before_github_cli_package"
 cp "$github_cli_toolchain_file" "$before_github_cli_toolchain"
 cp "$notion_cli_package_file" "$before_notion_cli_package"
 cp "$omp_package_file" "$before_omp_package"
+cp "$bb_ide_package_file" "$before_bb_ide_package"
+cp "$deepseek_harness_package_file" "$before_deepseek_harness_package"
 cp "$supabase_cli_package_file" "$before_supabase_cli_package"
 cp "$supabase_cli_toolchain_file" "$before_supabase_cli_toolchain"
 rm -f "$changed_packages_file"
@@ -937,6 +943,107 @@ block_codex_cargo_hashes() {
 codex_ref_changed="${codex_ref_changed:-0}"
 
 
+update_pnpm_source_package() {
+  local package="$1" file="$2" repo="$3" revision="$4" version_path="$5"
+  local current_rev source_json source_hash source_path version package_manager
+  local dependency_hash electron_version electron_json electron_hash pnpm_version pnpm_json pnpm_hash
+
+  current_rev="$(nix_string_value rev "$file")"
+  if [[ ! "$revision" =~ ^[0-9a-f]{40}$ || ! "$current_rev" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "invalid source revision for ${package}" >&2
+    return 1
+  fi
+  if [[ "$revision" == "$current_rev" ]]; then
+    echo "${package} is current (${current_rev:0:12})."
+    return 0
+  fi
+
+  source_json="$(prefetch_json true "https://github.com/${repo}/archive/${revision}.tar.gz")" || return 1
+  source_hash="$(printf '%s' "$source_json" | json_field hash)"
+  source_path="$(printf '%s' "$source_json" | json_field storePath)"
+  if [[ ! "$source_hash" =~ ^sha256-[A-Za-z0-9+/]{43}=$ || ! -d "$source_path" ]]; then
+    echo "failed to prefetch ${package} source" >&2
+    return 1
+  fi
+  version="$(json_file_field "$source_path/$version_path" version)"
+  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+    echo "invalid package version for ${package}" >&2
+    return 1
+  fi
+  package_manager="$(json_file_field "$source_path/package.json" packageManager)"
+  if [[ "$package" == "bb-ide" ]]; then
+    if [[ ! "$package_manager" =~ ^pnpm@9\.[0-9]+\.[0-9]+$ ]]; then
+      echo "BB requires a reviewed pnpm major change (${package_manager})" >&2
+      return 1
+    fi
+    electron_version="$(perl -MJSON::PP -0777 -e '
+      my $p = JSON::PP->new->decode(do { local $/; <> });
+      print $p->{devDependencies}{electron} // "";
+    ' "$source_path/apps/desktop/package.json")"
+    if [[ ! "$electron_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "BB must pin an exact Electron release" >&2
+      return 1
+    fi
+    if [[ "$electron_version" != "$(nix_string_value electronVersion "$file")" ]]; then
+      electron_json="$(prefetch_json false "https://github.com/electron/electron/releases/download/v${electron_version}/electron-v${electron_version}-linux-x64.zip")" || return 1
+      electron_hash="$(printf '%s' "$electron_json" | json_field hash)"
+      if [[ ! "$electron_hash" =~ ^sha256-[A-Za-z0-9+/]{43}=$ ]]; then
+        echo "failed to prefetch BB Electron release" >&2
+        return 1
+      fi
+      replace_nix_string electronVersion "$electron_version" "$file" || return 1
+      replace_nix_string electronHash "$electron_hash" "$file" || return 1
+    fi
+  else
+    if [[ ! "$package_manager" =~ ^pnpm@11\.([0-9]+)\.([0-9]+)$ ]]; then
+      echo "DeepSeek Harness requires a reviewed pnpm major change (${package_manager})" >&2
+      return 1
+    fi
+    pnpm_version="${package_manager#pnpm@}"
+    if [[ "$pnpm_version" != "$(nix_string_value pnpmVersion "$file")" ]]; then
+      pnpm_json="$(prefetch_json false "https://registry.npmjs.org/pnpm/-/pnpm-${pnpm_version}.tgz")" || return 1
+      pnpm_hash="$(printf '%s' "$pnpm_json" | json_field hash)"
+      if [[ ! "$pnpm_hash" =~ ^sha256-[A-Za-z0-9+/]{43}=$ ]]; then
+        echo "failed to prefetch Harness pnpm release" >&2
+        return 1
+      fi
+      replace_nix_string pnpmVersion "$pnpm_version" "$file" || return 1
+      replace_nix_string pnpmHash "$pnpm_hash" "$file" || return 1
+    fi
+  fi
+
+  replace_nix_string rev "$revision" "$file" || return 1
+  replace_nix_string hash "$source_hash" "$file" || return 1
+  replace_nix_string version "$version" "$file" || return 1
+  # Fetch only the dependency fixed-output derivation; never compile the app
+  # while discovering its new hash. The package transaction restores on error.
+  dependency_hash="$(discover_nix_fixed_hash "${package}.pnpmDeps" "$file" pnpmDepsHash)" || return 1
+  echo "Updated ${package} ${current_rev:0:12} -> ${revision:0:12}"
+}
+
+block_bb_ide() {
+  local revision
+  revision="$(git ls-remote https://github.com/get-bb/bb.git refs/heads/main | cut -f1)"
+  update_pnpm_source_package bb-ide "$bb_ide_package_file" get-bb/bb "$revision" packages/bb-app/package.json
+}
+
+block_deepseek_harness() {
+  local tag revision
+  # This project currently publishes prereleases only. Track published dsh
+  # releases explicitly; /releases/latest would incorrectly return no update.
+  tag="$(github_api_get https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=100 \
+    | perl -MJSON::PP -0777 -e '
+      my $releases = JSON::PP->new->decode(do { local $/; <STDIN> });
+      die "invalid Harness release list\n" unless ref($releases) eq "ARRAY";
+      my @eligible = sort { ($b->{published_at} // "") cmp ($a->{published_at} // "") }
+        grep { !$_->{draft} && ($_->{tag_name} // "") =~ /^dsh-v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/ } @$releases;
+      die "no published dsh release found\n" unless @eligible;
+      print $eligible[0]{tag_name};
+    ')"
+  revision="$(tag_commit https://github.com/deepseek-ai/deepseek-harness.git "$tag")"
+  update_pnpm_source_package deepseek-harness "$deepseek_harness_package_file" deepseek-ai/deepseek-harness "$revision" apps/cli/package.json
+}
+
 block_symphony_ts() {
   # symphony-ts is the owner's own fork, so it is followed on every run rather
   # than on a weekly cadence: the point of the pin is that a push to the fork
@@ -1005,6 +1112,8 @@ case "$update_mode" in
     run_block github_cli        block_github_cli        "$github_cli_package_file" "$github_cli_toolchain_file"
     run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
     run_block omp               block_omp               "$omp_package_file"
+    run_block bb_ide            block_bb_ide            "$bb_ide_package_file"
+    run_block deepseek_harness  block_deepseek_harness  "$deepseek_harness_package_file"
     run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
     run_block flake_update      block_flake_update      flake.lock flake.nix
     run_block codex_cargo_hashes block_codex_cargo_hashes flake.nix
@@ -1049,6 +1158,8 @@ case "$update_mode" in
     run_block freellmapi        block_freellmapi        "$freellmapi_package_file"
     run_block notion_cli        block_notion_cli        "$notion_cli_package_file"
     run_block omp               block_omp               "$omp_package_file"
+    run_block bb_ide            block_bb_ide            "$bb_ide_package_file"
+    run_block deepseek_harness  block_deepseek_harness  "$deepseek_harness_package_file"
     run_block supabase_cli      block_supabase_cli      "$supabase_cli_package_file" "$supabase_cli_toolchain_file"
     run_block flake_update      block_flake_update      flake.lock flake.nix
     ;;
@@ -1099,13 +1210,19 @@ fi
 if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_omp_package" "$omp_package_file"; then
   add_changed_package omp
 fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_bb_ide_package" "$bb_ide_package_file"; then
+  add_changed_package bb-ide
+fi
+if [[ "$update_mode" != "codex-only" ]] && ! cmp -s "$before_deepseek_harness_package" "$deepseek_harness_package_file"; then
+  add_changed_package deepseek-harness
+fi
 if [[ "$update_mode" != "codex-only" ]] && { ! cmp -s "$before_supabase_cli_package" "$supabase_cli_package_file" || ! cmp -s "$before_supabase_cli_toolchain" "$supabase_cli_toolchain_file"; }; then
   add_changed_package supabase-cli
 fi
 # Final summary: print OK/SKIPPED/FAILED for every block we ran.
 echo
 echo "::group::Update block summary"
-for name in archon codex_ref camofox symphony_ts devspace freellmapi github_cli notion_cli omp supabase_cli flake_update codex_cargo_hashes; do
+for name in archon codex_ref camofox symphony_ts devspace freellmapi github_cli notion_cli omp supabase_cli bb_ide deepseek_harness flake_update codex_cargo_hashes; do
   printf '  %-16s %s\n' "$name" "${block_status[$name]:-SKIPPED}"
 done
 echo "::endgroup::"
@@ -1123,7 +1240,7 @@ echo "::endgroup::"
 
 if [[ "$update_mode" != "codex-only" ]]; then
   failed_blocks=()
-  for name in archon camofox symphony_ts devspace freellmapi github_cli notion_cli omp supabase_cli flake_update; do
+  for name in archon camofox symphony_ts devspace freellmapi github_cli notion_cli omp supabase_cli bb_ide deepseek_harness flake_update; do
     if [[ "${block_status[$name]:-SKIPPED}" == "FAILED" ]]; then
       failed_blocks+=("$name")
     fi
