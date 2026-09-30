@@ -61,6 +61,9 @@ stdenv.mkDerivation (finalAttrs: {
     nodejs_24 pnpm_9.configHook python3 makeWrapper copyDesktopItems autoPatchelfHook
   ];
   buildInputs = [ stdenv.cc.cc.lib ];
+  # The lock includes optional musl variants, never selected on this glibc host.
+  # Keep all other missing libraries fatal, and smoke-test the active addons.
+  autoPatchelfIgnoreMissingDeps = [ "libc.musl-x86_64.so.1" ];
   ELECTRON_SKIP_BINARY_DOWNLOAD = "1";
   npm_config_nodedir = "${lib.getDev nodejs_24}";
   npm_config_build_from_source = "true";
