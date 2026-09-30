@@ -93,6 +93,8 @@ stdenv.mkDerivation (finalAttrs: {
     python3
   ];
   buildInputs = [ stdenv.cc.cc.lib ];
+  # CMake is used by Koffi, not as the workspace's top-level build system.
+  dontUseCmakeConfigure = true;
   NODE_OPTIONS = "--max-old-space-size=3072";
   # Source archives have no Git metadata; use upstream's provenance override.
   DSH_CLIENT_COMMIT_HASH = finalAttrs.src.rev;
