@@ -75,6 +75,18 @@ stdenv.mkDerivation (finalAttrs: {
 
   buildPhase = ''
     runHook preBuild
+    # Optional musl libvips has the same SONAME as glibc libvips. Keep its
+    # package metadata/links, but exclude the unused ELF from library discovery.
+    (
+      shopt -s nullglob
+      for library in node_modules/.pnpm/@img+sharp-libvips-linuxmusl-x64@*/node_modules/@img/sharp-libvips-linuxmusl-x64/lib/libvips-cpp.so.*; do
+        if [ ! -f "$library" ] || [ -L "$library" ] || ! isELF "$library"; then
+          echo "Unexpected optional musl libvips payload" >&2
+          exit 1
+        fi
+        rm -- "$library"
+      done
+    )
     autoPatchelf node_modules
     pnpm --recursive rebuild better-sqlite3 node-pty fs-native-extensions @parcel/watcher esbuild
     pnpm exec turbo run build --filter=bb-app --filter=@bb/desktop --concurrency=1 --env-mode=loose
@@ -149,7 +161,10 @@ stdenv.mkDerivation (finalAttrs: {
       load("node-pty");
       load("@parcel/watcher");
       load("fs-native-extensions");
-    ' "$out/share/bb/runtime/packages/bb-app/package.json"
+      const loadSharp = require("node:module").createRequire(process.argv[2]);
+      loadSharp("sharp");
+    ' "$out/share/bb/runtime/packages/bb-app/package.json" \
+      "$out/share/bb/runtime/apps/app/package.json"
     test -f "$out/share/bb/runtime/packages/bb-app/app/dist/index.html"
     test -f "$out/share/bb/desktop/dist/preload.cjs"
     test -f "$out/share/bb/desktop/dist/bb-app-bridge.mjs"
