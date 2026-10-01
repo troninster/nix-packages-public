@@ -60,7 +60,9 @@ stdenv.mkDerivation (finalAttrs: {
   nativeBuildInputs = [
     nodejs_24 pnpm_9.configHook python3 makeWrapper copyDesktopItems autoPatchelfHook
   ];
-  buildInputs = [ stdenv.cc.cc.lib ];
+  # Generated launchers spawn Node scripts directly; the host shebang hook
+  # needs the runtime interpreter, not just its build-time counterpart.
+  buildInputs = [ nodejs_24 stdenv.cc.cc.lib ];
   # The lock includes optional musl variants, never selected on this glibc host.
   # Keep all other missing libraries fatal, and smoke-test the active addons.
   autoPatchelfIgnoreMissingDeps = [ "libc.musl-x86_64.so.1" ];
