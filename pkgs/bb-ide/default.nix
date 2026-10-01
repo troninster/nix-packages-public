@@ -118,6 +118,20 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postInstall
   '';
 
+  preFixup = ''
+    # Pre-build autoPatchelf resolves bundled libraries inside the source tree.
+    # Relocate those RPATH entries with the copied workspace before the normal
+    # shrink/check hooks; store paths and $ORIGIN entries remain unchanged.
+    while IFS= read -r -d "" binary; do
+      isELF "$binary" || continue
+      rpath=$(patchelf --print-rpath "$binary" 2>/dev/null) || continue
+      relocatedRpath="''${rpath//"$PWD/"/"$out/share/bb/runtime/"}"
+      if [ "$rpath" != "$relocatedRpath" ]; then
+        patchelf --set-rpath "$relocatedRpath" "$binary"
+      fi
+    done < <(find "$out/share/bb/runtime" -type f -print0)
+  '';
+
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
