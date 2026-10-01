@@ -96,7 +96,7 @@ stdenv.mkDerivation (finalAttrs: {
     # pnpm 9 deploy reinjects workspace dependencies and ignores the lockfile.
     # Preserve the already-built frozen closure and its relative workspace links.
     mkdir -p "$out/share/bb/runtime"
-    cp -R apps packages plugins node_modules package.json pnpm-workspace.yaml pnpm-lock.yaml LICENSE \
+    cp -R apps packages plugins examples tests node_modules package.json pnpm-workspace.yaml pnpm-lock.yaml LICENSE \
       "$out/share/bb/runtime/"
     mkdir -p "$out/share/bb/desktop/node_modules" "$out/share/icons/hicolor/512x512/apps"
     cp -r apps/desktop/dist apps/desktop/assets apps/desktop/package.json "$out/share/bb/desktop/"
