@@ -103,6 +103,7 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Check Hermes packaging contracts
         if: ${{ inputs.package == 'hermes-agent' && steps.update.outputs.changed == 'true' }}

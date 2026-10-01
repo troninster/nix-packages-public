@@ -18,9 +18,13 @@ on:
         required: false
         default: false
         type: boolean
+      source_revision:
+        description: "Restore selected packages from an exact public main-history SHA (without changing source pins)"
+        required: false
+        type: string
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ inputs.source_revision && format('repair-{0}-{1}', inputs.source_revision, inputs.packages) || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -74,6 +78,21 @@ jobs:
       - name: Check update workflow contracts
         run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k UpdateUpstreamsWorkflowTests -k PackageDetectorTests -k UpdateArtifactTests -k GitHubCliToolchainTests -v
 
+      - name: Validate historical cache repair request
+        if: ${{ inputs.source_revision != '' }}
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          PACKAGES: ${{ inputs.packages }}
+          ALL: ${{ inputs.all }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$PACKAGES"
+          test "$ALL" != true
+          git fetch origin main "$SOURCE_REVISION"
+          git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
+
       - name: Prepare artifact transport smoke
         run: |
           mkdir -p "$RUNNER_TEMP/artifact-smoke-source"
@@ -121,6 +140,7 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Flake check
         continue-on-error: true
@@ -148,6 +168,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Free disk space
         run: |
@@ -179,10 +201,23 @@ jobs:
           remove-codeql: true
           remove-docker-images: true
 
+      - name: Keep package build temporary files on the Nix volume
+        run: |
+          set -euo pipefail
+          sudo install -d -m 1777 /nix/ci-tmp
+          sudo install -d -m 0755 /nix/ci-build
+          sudo install -d -m 0755 /etc/systemd/system/nix-daemon.service.d
+          printf '[Service]\nEnvironment=TMPDIR=/nix/ci-tmp\n' \
+            | sudo tee /etc/systemd/system/nix-daemon.service.d/ci-tmp.conf > /dev/null
+          echo 'TMPDIR=/nix/ci-tmp' >> "$GITHUB_ENV"
+
       - name: Install Nix
         uses: cachix/install-nix-action@v31
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           extra_nix_config: |
+            build-dir = /nix/ci-build
             experimental-features = nix-command flakes
             accept-flake-config = true
 
@@ -192,6 +227,7 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Check Codex packaging contracts
         if: ${{ matrix.package == 'codex' }}
@@ -210,7 +246,23 @@ jobs:
         run: node --test pkgs/deepseek-harness/normalize-policy-cache.test.mjs
 
       - name: Build package
+        if: ${{ inputs.source_revision == '' }}
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
+
+      - name: Repair the exact historical package cache
+        if: ${{ inputs.source_revision != '' }}
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          # Keep current delivery/retention code, but evaluate original source
+          # bytes: no flake update, cherry-pick, source commit or push.
+          cp scripts/build-package "$RUNNER_TEMP/repair-build-package"
+          git fetch origin main "$SOURCE_REVISION"
+          git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
+          git switch --detach "$SOURCE_REVISION"
+          NIX_BUILD_MONITOR=1 "$RUNNER_TEMP/repair-build-package" "$PACKAGE"
 
       - name: Check package reproducibility
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.check_reproducibility }}

@@ -109,6 +109,51 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         cls.updater = UPDATER.read_text()
         cls.detector = PACKAGE_DETECTOR.read_text()
 
+    def test_public_delivery_pins_bounded_releases_and_supports_exact_cache_repair(self) -> None:
+        delivery = (ROOT / "scripts/build-package").read_text()
+        self.assertLess(delivery.index('cachix push "$CACHIX_CACHE_NAME"'),
+                        delivery.index('cachix pin "$CACHIX_CACHE_NAME"'))
+        self.assertIn('--keep-revisions 3', delivery)
+        for workflow in ("ci.yml", "update-package.yml", "update-upstreams.yml"):
+            source = (ROOT / ".github/workflows" / workflow).read_text()
+            for configuration in re.finditer(r'authToken:.*\n', source):
+                self.assertIn('skipPush: true', source[configuration.end():configuration.end()+60])
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        repair = workflow_step(ci, "Repair the exact historical package cache")
+        self.assertIn('git merge-base --is-ancestor "$SOURCE_REVISION" origin/main', repair)
+        self.assertIn('git switch --detach "$SOURCE_REVISION"', repair)
+        self.assertIn('"$RUNNER_TEMP/repair-build-package" "$PACKAGE"', repair)
+        self.assertNotIn('git push', repair)
+        self.assertNotIn('nix flake update', repair)
+
+    def test_pin_failure_is_a_delivery_failure_after_successful_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binaries = root / "bin"
+            binaries.mkdir()
+            output = root / "ready-package"
+            output.mkdir()
+            commands = root / "commands.jsonl"
+            (binaries / "nix").write_text(
+                "#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n"
+                "Path(sys.argv[sys.argv.index('--out-link')+1]).symlink_to(os.environ['FIXTURE_OUTPUT'])\n")
+            (binaries / "cachix").write_text(
+                "#!/usr/bin/env python3\nimport os,sys,json\n"
+                "with open(os.environ['FIXTURE_COMMANDS'],'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                "sys.exit(7 if sys.argv[1]=='pin' and os.environ['FIXTURE_PIN_FAIL']=='1' else 0)\n")
+            for binary in binaries.iterdir():
+                binary.chmod(0o755)
+            env = {**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
+                   "CACHIX_CACHE_NAME": "fixture", "CACHIX_AUTH_TOKEN": "fixture",
+                   "FIXTURE_OUTPUT": str(output), "FIXTURE_COMMANDS": str(commands),
+                   "NIX_BUILD_MONITOR": "0", "FIXTURE_PIN_FAIL": "1"}
+            result = subprocess.run(["bash", str(ROOT / "scripts/build-package"), "camofox-browser"],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 7)
+            calls = [json.loads(line) for line in commands.read_text().splitlines()]
+            self.assertEqual(calls[0][0], "push")
+            self.assertEqual(calls[1], ["pin", "fixture", "release-camofox-browser", str(output), "--keep-revisions", "3"])
+
     def test_new_pnpm_packages_refresh_runtime_pins_and_only_fetch_dependencies(self) -> None:
         helpers = self.updater[self.updater.index("nix_string_value() {"):self.updater.index("latest_git_head() {")]
         discovery = self.updater[self.updater.index("discover_nix_fixed_hash() {"):self.updater.index("update_tagged_go_package() {")]

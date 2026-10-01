@@ -141,6 +141,7 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Check Codex packaging contracts
         if: ${{ steps.codex_update.outputs.changed == 'true' }}
@@ -359,6 +360,7 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Build verified GitHub CLI update
         if: ${{ steps.update.outputs.changed == 'true' }}
@@ -510,6 +512,7 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Check Camofox candidate contracts
         if: ${{ steps.update.outputs.changed == 'true' }}

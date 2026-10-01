@@ -44,6 +44,10 @@ if [[ -n "${CACHIX_CACHE_NAME:-}" && -n "${CACHIX_AUTH_TOKEN:-}" ]]; then
 
   echo "Pushing ${out_link} to Cachix cache ${CACHIX_CACHE_NAME}"
   cachix push "$CACHIX_CACHE_NAME" "$out_link"
+  # Upload alone is not durable delivery: Cachix may garbage-collect outputs.
+  # Bound history instead of retaining every development build indefinitely.
+  cachix pin "$CACHIX_CACHE_NAME" "release-${package}" "$(readlink -f "$out_link")" \
+    --keep-revisions 3
 else
   if [[ "$require_cachix_push" == "1" ]]; then
     echo "Cachix push is required, but CACHIX_CACHE_NAME or CACHIX_AUTH_TOKEN is not configured." >&2
