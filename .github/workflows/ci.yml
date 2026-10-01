@@ -205,6 +205,10 @@ jobs:
         if: ${{ matrix.package == 'camofox-browser' }}
         run: python3 -m unittest discover -s tests -p test_update_upstreams.py -k ExternalPackageContractTests.test_camofox -v
 
+      - name: Check DeepSeek dependency policy cache
+        if: ${{ matrix.package == 'deepseek-harness' }}
+        run: node --test pkgs/deepseek-harness/normalize-policy-cache.test.mjs
+
       - name: Build package
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
 

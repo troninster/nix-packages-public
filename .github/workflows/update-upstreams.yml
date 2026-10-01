@@ -289,7 +289,7 @@ jobs:
       # execution retains exact-base publication without rebasing built pins.
       max-parallel: 1
       matrix:
-        package: [archon, devspace, freellmapi, hermes-agent, notion-cli, omp, symphony-ts, supabase-cli]
+        package: [archon, devspace, freellmapi, hermes-agent, notion-cli, omp, symphony-ts, supabase-cli, bb-ide, deepseek-harness]
     permissions:
       contents: write
     uses: ./.github/workflows/update-package.yml
