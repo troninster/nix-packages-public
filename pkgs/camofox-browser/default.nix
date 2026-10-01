@@ -42,10 +42,10 @@
 }:
 
 let
-  camofoxBrowserVersion = "1.17.0";
-  camofoxBrowserRev = "389c996ae3c7d42e539295a336ee6f975847f066";
-  camofoxBrowserHash = "sha256-Rwg2rw2lXSif6uYixmQfjrJu+DztbgKJKBG4DAmWGis=";
-  camofoxBrowserNpmDepsHash = "sha256-139zUsjb2IglSMwpyGYqyOFYrQ+uxWseLlg+hYpOArI=";
+  camofoxBrowserVersion = "1.18.0";
+  camofoxBrowserRev = "f94c81babf4bfd44cdd4bd46e1f2e1fb1d91c753";
+  camofoxBrowserHash = "sha256-O2Lze6e6AZn/vX0QCaoS9nABpduf02pco+JDsFDP5eA=";
+  camofoxBrowserNpmDepsHash = "sha256-RtU1bPFfOLTmYEU7etHyf8dVR+kZeE2x1pk/zY4aYII=";
   camoufoxEngineReleaseTag = "v156.0.1-beta.33";
   camoufoxEngineVersion = "156.0.1-beta.33";
   camoufoxEngineHash = "sha256-cw1zEVOyoWysI4oLSn+EnATR/WGBwJ7GrylpWvBAevg=";
