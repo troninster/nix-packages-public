@@ -182,10 +182,6 @@ jobs:
           remove-codeql: true
           remove-docker-images: true
 
-      - name: Prepare Hermes archive on the Nix volume
-        if: ${{ matrix.package == 'hermes-agent' }}
-        run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
-
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
@@ -218,6 +214,10 @@ jobs:
       - name: Check DeepSeek dependency policy cache
         if: ${{ matrix.package == 'deepseek-harness' }}
         run: node --test pkgs/deepseek-harness/normalize-policy-cache.test.mjs
+
+      - name: Prepare Hermes archive on the Nix volume
+        if: ${{ matrix.package == 'hermes-agent' }}
+        run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
 
       - name: Build package
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"

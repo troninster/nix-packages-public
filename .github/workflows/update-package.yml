@@ -63,10 +63,6 @@ jobs:
           remove-codeql: true
           remove-docker-images: true
 
-      - name: Prepare Hermes archive on the Nix volume
-        if: ${{ inputs.package == 'hermes-agent' }}
-        run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
-
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
@@ -116,6 +112,10 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
           python3 -m unittest discover -s tests -p test_hermes_release.py -v
+
+      - name: Prepare Hermes archive on the Nix volume
+        if: ${{ inputs.package == 'hermes-agent' && steps.update.outputs.changed == 'true' }}
+        run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
 
       - name: Build selected package
         if: ${{ steps.update.outputs.changed == 'true' }}

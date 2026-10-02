@@ -67,6 +67,9 @@ class HermesReleaseTests(unittest.TestCase):
         self.assertIn("needs.publish-hermes.result", ci)
         self.assertLess(ci.index("Check package reproducibility"),
                         ci.index("Upload verified Hermes release"))
+        build = ci.split("  build:\n", 1)[1].split("  publish-hermes:\n", 1)[0]
+        self.assertLess(build.index("Install Nix"), build.index("Prepare Hermes archive on the Nix volume"))
+        self.assertLess(workflow.index("Install Nix"), workflow.index("Prepare Hermes archive on the Nix volume"))
         delivery = (ROOT / "scripts/build-package").read_text()
         self.assertIn('if [[ "$package" == hermes-agent ]]', delivery)
         self.assertNotIn("cachix pin", delivery)
