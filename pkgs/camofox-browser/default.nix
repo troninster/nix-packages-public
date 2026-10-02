@@ -43,9 +43,9 @@
 
 let
   camofoxBrowserVersion = "1.18.0";
-  camofoxBrowserRev = "f94c81babf4bfd44cdd4bd46e1f2e1fb1d91c753";
-  camofoxBrowserHash = "sha256-O2Lze6e6AZn/vX0QCaoS9nABpduf02pco+JDsFDP5eA=";
-  camofoxBrowserNpmDepsHash = "sha256-RtU1bPFfOLTmYEU7etHyf8dVR+kZeE2x1pk/zY4aYII=";
+  camofoxBrowserRev = "46b6eb044387142af90cc170436244ad65fffaf1";
+  camofoxBrowserHash = "sha256-OfsyrcA9YKFL2qdZNN9YViXokSfRSJZqBUUdk4YlUw8=";
+  camofoxBrowserNpmDepsHash = "sha256-6ir3EC38yYwNiZUyVijCOO8Ajif18e0UGT4l0UBeYOA=";
   camoufoxEngineReleaseTag = "v156.0.1-beta.33";
   camoufoxEngineVersion = "156.0.1-beta.33";
   camoufoxEngineHash = "sha256-cw1zEVOyoWysI4oLSn+EnATR/WGBwJ7GrylpWvBAevg=";
