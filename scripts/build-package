@@ -36,11 +36,16 @@ rm -f "$out_link"
 echo "Building .#${package}"
 nix build "${nix_flags[@]}" --out-link "$out_link" ".#${package}"
 
+hermes_release_delivery=false
 if [[ "$package" == hermes-agent ]]; then
+  # Historical recipes predate Releases; keep their original cache lane.
+  hermes_release_delivery="$(nix eval --json --apply 'p: p.hermesReleaseDelivery or false' .#hermes-agent)"
+fi
+if [[ "$hermes_release_delivery" == true ]]; then
   # The wrapper alone does not rebuild its Python dependency. Verify the
   # actual core where same-path/different-NAR bytecode was observed.
   core_drv="$(nix derivation show --recursive .#hermes-agent \
-    | python3 tools/hermes-release.py core-derivation)"
+    | python3 "${HERMES_RELEASE_TOOL:-tools/hermes-release.py}" core-derivation)"
   nix build "${nix_flags[@]}" --rebuild --no-link "$core_drv^out"
 fi
 
@@ -52,7 +57,7 @@ if [[ -n "${CACHIX_CACHE_NAME:-}" && -n "${CACHIX_AUTH_TOKEN:-}" ]]; then
 
   echo "Pushing ${out_link} to Cachix cache ${CACHIX_CACHE_NAME}"
   cachix push "$CACHIX_CACHE_NAME" "$out_link"
-  if [[ "$package" == hermes-agent ]]; then
+  if [[ "$hermes_release_delivery" == true && "${NIX_PACKAGE_CACHE_REPAIR:-0}" != 1 ]]; then
     # Cachix supplies the existing signature, not durable Hermes retention.
     # CI's separate write-permission job publishes the verified archive before
     # accepting delivery/upstream publication. Other package lanes are unchanged.

@@ -58,6 +58,23 @@ That command uses `--max-jobs 0`, so a cache miss fails instead of compiling
 Codex locally. `./scripts/build-all` still evaluates flake checks first and then
 builds each package separately; use it only when a local build is intentional.
 
+Automatic action-level uploads are disabled: build-package explicitly pushes
+only the successful package's runtime closure, not every build/source output.
+Cache repair does not create/delete Cachix pins or change retention. Existing
+ready outputs and pins stay untouched; private Neurobooks and whole-system
+paths must never be passed to this cache.
+
+To restore a missing historical public package without moving source pins,
+dispatch `CI` with explicit `packages` and `source_revision` (a full SHA in this
+repository's main history). The build uses those original source bytes and the
+current upload helper. It neither updates flakes nor commits/pushes
+source changes. The matching system promotion must still validate its exact
+expected output before it can consume the restored package.
+Historical Hermes recipes without `hermesReleaseDelivery` retain cache-only
+delivery. Repair never publishes or requires a new Release; current Hermes
+recipes still pass the Python-core rebuild gate before cache upload. Normal
+Hermes publication keeps its required signed Release gate.
+
 ## Consume From Another Flake
 
 Hermes is delivered as a complete signed runtime closure in this repository's
