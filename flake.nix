@@ -13,7 +13,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     codex = {
-      url = "github:openai/codex/rust-v0.159.3";
+      url = "github:openai/codex/rust-v0.160.0";
       # Route codex's transitive rust-overlay input through our own (declared below) so a
       # single `nix flake update rust-overlay` refreshes both. Otherwise codex stays pinned
       # to whatever rust-overlay rev its upstream flake.lock happened to record, and the
@@ -70,8 +70,11 @@
         })
       ];
     };
-    patchHermesTelegramMenuCap = pkgs: package:
+    patchHermesTelegramMenuCap = pkgs: upstreamPackage:
       let
+        package = upstreamPackage.override {
+          uv2nix = import ./pkgs/hermes-agent/reproducible-bytecode.nix hermes-agent.inputs.uv2nix;
+        };
         baseVenv = package.passthru.hermesVenv;
         patchedVenv = baseVenv.overrideAttrs (oldAttrs: {
           postInstall = (oldAttrs.postInstall or "") + ''
@@ -118,6 +121,7 @@
         '';
         passthru = (oldAttrs.passthru or { }) // {
           hermesVenv = patchedVenv;
+          hermesReleaseDelivery = true;
         };
       });
     codexCargoOutputHashes = lib: {

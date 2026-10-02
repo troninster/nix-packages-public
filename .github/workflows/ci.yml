@@ -164,6 +164,8 @@ jobs:
       fail-fast: false
       matrix:
         package: ${{ fromJSON(needs.detect-changes.outputs.packages_json) }}
+    env:
+      HERMES_RELEASE_DIR: /nix/ci-artifacts/hermes-release
 
     steps:
       - name: Checkout
@@ -235,7 +237,9 @@ jobs:
 
       - name: Check Hermes packaging contracts
         if: ${{ matrix.package == 'hermes-agent' }}
-        run: python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
+        run: |
+          python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
+          python3 -m unittest discover -s tests -p test_hermes_release.py -v
 
       - name: Check Camofox packaging contracts
         if: ${{ matrix.package == 'camofox-browser' }}
@@ -244,6 +248,10 @@ jobs:
       - name: Check DeepSeek dependency policy cache
         if: ${{ matrix.package == 'deepseek-harness' }}
         run: node --test pkgs/deepseek-harness/normalize-policy-cache.test.mjs
+
+      - name: Prepare Hermes archive on the Nix volume
+        if: ${{ matrix.package == 'hermes-agent' }}
+        run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
 
       - name: Build package
         if: ${{ inputs.source_revision == '' }}
@@ -256,17 +264,47 @@ jobs:
           PACKAGE: ${{ matrix.package }}
         run: |
           set -euo pipefail
-          # Keep current delivery/retention code, but evaluate original source
+          # Keep current delivery code, but evaluate original source
           # bytes: no flake update, cherry-pick, source commit or push.
           cp scripts/build-package "$RUNNER_TEMP/repair-build-package"
+          cp tools/hermes-release.py "$RUNNER_TEMP/repair-hermes-release.py"
           git fetch origin main "$SOURCE_REVISION"
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           git switch --detach "$SOURCE_REVISION"
-          NIX_BUILD_MONITOR=1 "$RUNNER_TEMP/repair-build-package" "$PACKAGE"
+          NIX_BUILD_MONITOR=1 NIX_PACKAGE_CACHE_REPAIR=1 \
+            HERMES_RELEASE_TOOL="$RUNNER_TEMP/repair-hermes-release.py" \
+            "$RUNNER_TEMP/repair-build-package" "$PACKAGE"
 
       - name: Check package reproducibility
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.check_reproducibility }}
         run: nix build --rebuild --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
+
+      - name: Upload verified Hermes release
+        if: ${{ matrix.package == 'hermes-agent' && env.REQUIRE_CACHIX_PUSH == '1' && inputs.source_revision == '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.HERMES_RELEASE_DIR }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-hermes:
+    name: Publish signed Hermes release
+    needs: [detect-changes, build]
+    if: ${{ always() && !cancelled() && inputs.source_revision == '' && needs.detect-changes.result == 'success' && contains(fromJSON(needs.detect-changes.outputs.packages_json), 'hermes-agent') && github.event.pull_request.user.login != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hermes-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hermes-release
+      - name: Publish only verified Hermes archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/hermes-release.py publish "$RUNNER_TEMP/hermes-release"
 
   ci-result:
     name: CI result
@@ -277,6 +315,7 @@ jobs:
       - detect-changes
       - flake-check
       - build
+      - publish-hermes
     if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions:
@@ -288,6 +327,7 @@ jobs:
           DETECT_RESULT: ${{ needs.detect-changes.result }}
           FLAKE_CHECK_RESULT: ${{ needs.flake-check.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          HERMES_RELEASE_RESULT: ${{ needs.publish-hermes.result }}
           PACKAGE_COUNT: ${{ needs.detect-changes.outputs.package_count }}
         run: |
           set -euo pipefail
@@ -298,7 +338,7 @@ jobs:
             echo "::warning::flake-check finished with result: $FLAKE_CHECK_RESULT (informational only, does not gate CI)"
           fi
 
-          for result in "$DETECT_RESULT" "$BUILD_RESULT"; do
+          for result in "$DETECT_RESULT" "$BUILD_RESULT" "$HERMES_RELEASE_RESULT"; do
             case "$result" in
               success | skipped)
                 ;;

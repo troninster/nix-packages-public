@@ -109,11 +109,10 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         cls.updater = UPDATER.read_text()
         cls.detector = PACKAGE_DETECTOR.read_text()
 
-    def test_public_delivery_pins_bounded_releases_and_supports_exact_cache_repair(self) -> None:
+    def test_public_delivery_restores_exact_cache_without_changing_retention(self) -> None:
         delivery = (ROOT / "scripts/build-package").read_text()
-        self.assertLess(delivery.index('cachix push "$CACHIX_CACHE_NAME"'),
-                        delivery.index('cachix pin "$CACHIX_CACHE_NAME"'))
-        self.assertIn('--keep-revisions 3', delivery)
+        self.assertIn('cachix push "$CACHIX_CACHE_NAME"', delivery)
+        self.assertNotIn('cachix pin ', delivery)
         for workflow in ("ci.yml", "update-package.yml", "update-upstreams.yml"):
             source = (ROOT / ".github/workflows" / workflow).read_text()
             for configuration in re.finditer(r'authToken:.*\n', source):
@@ -123,10 +122,14 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
         self.assertIn('git merge-base --is-ancestor "$SOURCE_REVISION" origin/main', repair)
         self.assertIn('git switch --detach "$SOURCE_REVISION"', repair)
         self.assertIn('"$RUNNER_TEMP/repair-build-package" "$PACKAGE"', repair)
+        self.assertIn('NIX_PACKAGE_CACHE_REPAIR=1', repair)
+        self.assertIn('cp tools/hermes-release.py', repair)
+        self.assertLess(repair.index('cp tools/hermes-release.py'),
+                        repair.index('git switch --detach'))
         self.assertNotIn('git push', repair)
         self.assertNotIn('nix flake update', repair)
 
-    def test_pin_failure_is_a_delivery_failure_after_successful_upload(self) -> None:
+    def test_runtime_upload_does_not_attempt_a_quota_blocked_pin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             binaries = root / "bin"
@@ -149,10 +152,50 @@ class UpdateUpstreamsWorkflowTests(unittest.TestCase):
                    "NIX_BUILD_MONITOR": "0", "FIXTURE_PIN_FAIL": "1"}
             result = subprocess.run(["bash", str(ROOT / "scripts/build-package"), "camofox-browser"],
                                     cwd=root, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 7)
+            self.assertEqual(result.returncode, 0, result.stderr)
             calls = [json.loads(line) for line in commands.read_text().splitlines()]
-            self.assertEqual(calls[0][0], "push")
-            self.assertEqual(calls[1], ["pin", "fixture", "release-camofox-browser", str(output), "--keep-revisions", "3"])
+            self.assertEqual(calls, [["push", "fixture", "result-camofox-browser"]])
+
+    def test_hermes_cache_repair_supports_legacy_recipes_and_saved_helpers(self) -> None:
+        for release, repair in ((False, True), (True, True), (True, False)):
+            with self.subTest(release=release, repair=repair), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binaries = root / "bin"
+                binaries.mkdir()
+                output = root / "ready-package"
+                output.mkdir()
+                commands = root / "commands.jsonl"
+                (binaries / "nix").write_text(
+                    "#!/usr/bin/env python3\nimport os,sys,json\nfrom pathlib import Path\n"
+                    "with open(os.environ['FIXTURE_COMMANDS'],'a') as f: f.write(json.dumps(sys.argv)+'\\n')\n"
+                    "if sys.argv[1]=='eval': print(os.environ['FIXTURE_RELEASE'])\n"
+                    "elif sys.argv[1]=='derivation': print('{}')\n"
+                    "elif '--out-link' in sys.argv: Path(sys.argv[sys.argv.index('--out-link')+1]).symlink_to(os.environ['FIXTURE_OUTPUT'])\n")
+                (binaries / "cachix").write_text(
+                    "#!/usr/bin/env python3\nimport os,sys,json\n"
+                    "with open(os.environ['FIXTURE_COMMANDS'],'a') as f: f.write(json.dumps(sys.argv)+'\\n')\n"
+                    "sys.exit(7 if sys.argv[1]=='pin' else 0)\n")
+                tool = root / "saved-hermes-release.py"
+                tool.write_text(
+                    "import os,sys,json\n"
+                    "with open(os.environ['FIXTURE_COMMANDS'],'a') as f: f.write(json.dumps(sys.argv)+'\\n')\n"
+                    "if sys.argv[1]=='core-derivation': sys.stdin.read(); print('/nix/store/'+'0'*32+'-hermes-agent-0.21.5.drv')\n")
+                for binary in binaries.iterdir():
+                    binary.chmod(0o755)
+                env = {**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
+                       "CACHIX_CACHE_NAME": "fixture", "CACHIX_AUTH_TOKEN": "fixture",
+                       "FIXTURE_OUTPUT": str(output), "FIXTURE_COMMANDS": str(commands),
+                       "FIXTURE_RELEASE": json.dumps(release), "NIX_BUILD_MONITOR": "0",
+                       "NIX_PACKAGE_CACHE_REPAIR": str(int(repair)), "HERMES_RELEASE_TOOL": str(tool)}
+                # No repository tools directory: reproduce historical checkout.
+                result = subprocess.run(["bash", str(ROOT / "scripts/build-package"), "hermes-agent"],
+                                        cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = [json.loads(line)[1:] for line in commands.read_text().splitlines()]
+                self.assertEqual(any('--rebuild' in c for c in calls), release)
+                self.assertEqual(any(c[0] == 'export' for c in calls), release and not repair)
+                self.assertEqual(sum(c[0] == 'push' for c in calls), 1)
+                self.assertFalse(any(c[0] == 'pin' for c in calls))
 
     def test_new_pnpm_packages_refresh_runtime_pins_and_only_fetch_dependencies(self) -> None:
         helpers = self.updater[self.updater.index("nix_string_value() {"):self.updater.index("latest_git_head() {")]
