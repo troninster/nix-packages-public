@@ -103,10 +103,13 @@ jobs:
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Check Hermes packaging contracts
         if: ${{ inputs.package == 'hermes-agent' && steps.update.outputs.changed == 'true' }}
-        run: python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
+        run: |
+          python3 -m unittest discover -s tests -p test_hermes_registration_lifecycle.py -v
+          python3 -m unittest discover -s tests -p test_hermes_release.py -v
 
       - name: Build selected package
         if: ${{ steps.update.outputs.changed == 'true' }}
@@ -124,6 +127,15 @@ jobs:
             --base-sha "${{ steps.base.outputs.sha }}" \
             --packages-file .changed-packages \
             --artifact-dir "$RUNNER_TEMP/package-update-${{ inputs.package }}"
+
+      - name: Upload verified Hermes release
+        if: ${{ inputs.package == 'hermes-agent' && steps.update.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hermes-release
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload selected publication artifact
         if: ${{ steps.update.outputs.changed == 'true' }}
@@ -181,6 +193,19 @@ jobs:
             --phase "${{ inputs.package }}" \
             --base-sha "$EXPECTED_BASE_SHA" \
             --artifact-dir "$RUNNER_TEMP/package-update-${{ inputs.package }}"
+
+      - name: Download verified Hermes release
+        if: ${{ inputs.package == 'hermes-agent' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hermes-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hermes-release
+
+      - name: Publish Hermes before advancing its source pin
+        if: ${{ inputs.package == 'hermes-agent' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/hermes-release.py publish "$RUNNER_TEMP/hermes-release"
 
       - name: Commit and push selected update
         env:

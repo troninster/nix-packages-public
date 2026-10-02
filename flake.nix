@@ -70,8 +70,11 @@
         })
       ];
     };
-    patchHermesTelegramMenuCap = pkgs: package:
+    patchHermesTelegramMenuCap = pkgs: upstreamPackage:
       let
+        package = upstreamPackage.override {
+          uv2nix = import ./pkgs/hermes-agent/reproducible-bytecode.nix hermes-agent.inputs.uv2nix;
+        };
         baseVenv = package.passthru.hermesVenv;
         patchedVenv = baseVenv.overrideAttrs (oldAttrs: {
           postInstall = (oldAttrs.postInstall or "") + ''
@@ -118,6 +121,7 @@
         '';
         passthru = (oldAttrs.passthru or { }) // {
           hermesVenv = patchedVenv;
+          hermesReleaseDelivery = true;
         };
       });
     codexCargoOutputHashes = lib: {
