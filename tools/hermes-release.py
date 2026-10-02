@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -42,6 +43,18 @@ def tag(path):
     match = ROOT.fullmatch(path)
     require(match is not None, "Only a Hermes package root is allowed")
     return "hermes-agent-x86_64-linux-" + match[1]
+
+
+def core_derivation(data):
+    # Nix 2.35 wraps the graph and uses store basenames; the host's older Nix
+    # returns a flat full-path map. Both still expose the core build marker.
+    graph = data.get("derivations", data)
+    paths = [path for path, value in graph.items()
+             if isinstance(value, dict) and value.get("env", {}).get("HERMES_NIX_BUILD") == "1"]
+    require(len(paths) == 1, "Expected exactly one Hermes Python core")
+    path = paths[0] if paths[0].startswith("/nix/store/") else "/nix/store/" + paths[0]
+    require(path.endswith(".drv") and ROOT.fullmatch(path[:-4]), "Invalid Hermes core derivation")
+    return path
 
 
 def fields(payload):
@@ -182,11 +195,14 @@ if __name__ == "__main__":
     create.add_argument("directory", type=Path)
     upload = sub.add_parser("publish")
     upload.add_argument("directory", type=Path)
+    sub.add_parser("core-derivation")
     args = parser.parse_args()
     try:
         if args.command == "export":
             export(args.path, args.directory.resolve())
-        else:
+        elif args.command == "publish":
             publish(args.directory.resolve())
+        else:
+            print(core_derivation(json.load(sys.stdin)))
     except (RuntimeError, OSError, ValueError, KeyError) as exc:
         parser.exit(1, f"Hermes release failed: {exc}\n")

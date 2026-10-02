@@ -11,6 +11,15 @@ SPEC.loader.exec_module(release)
 
 
 class HermesReleaseTests(unittest.TestCase):
+    def test_core_selection_accepts_host_and_ci_nix_json(self):
+        name = "0" * 32 + "-hermes-agent-0.21.5.drv"
+        core = {"env": {"HERMES_NIX_BUILD": "1"}}
+        self.assertEqual(release.core_derivation({"/nix/store/" + name: core}), "/nix/store/" + name)
+        self.assertEqual(release.core_derivation({"version": 4, "derivations": {name: core}}),
+                         "/nix/store/" + name)
+        with self.assertRaises(RuntimeError):
+            release.core_derivation({"version": 4, "derivations": {name: core, name + "-duplicate": core}})
+
     def test_tag_is_output_specific_and_rejects_other_packages(self):
         output = "/nix/store/" + "0" * 32 + "-hermes-agent-0.21.5"
         self.assertEqual(release.tag(output), "hermes-agent-x86_64-linux-" + "0" * 32)

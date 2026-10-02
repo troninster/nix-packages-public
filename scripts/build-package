@@ -39,13 +39,8 @@ nix build "${nix_flags[@]}" --out-link "$out_link" ".#${package}"
 if [[ "$package" == hermes-agent ]]; then
   # The wrapper alone does not rebuild its Python dependency. Verify the
   # actual core where same-path/different-NAR bytecode was observed.
-  core_drv="$(nix derivation show --recursive .#hermes-agent | python3 -c '
-import json, sys
-paths = [p for p, value in json.load(sys.stdin).items()
-         if value["env"].get("HERMES_NIX_BUILD") == "1"]
-assert len(paths) == 1, "Expected exactly one Hermes Python core"
-print(paths[0])
-')"
+  core_drv="$(nix derivation show --recursive .#hermes-agent \
+    | python3 tools/hermes-release.py core-derivation)"
   nix build "${nix_flags[@]}" --rebuild --no-link "$core_drv^out"
 fi
 
