@@ -112,25 +112,34 @@ def export(path, directory):
             with member.open("rb") as stream:
                 bundle.addfile(entry, stream)
     parts = []
-    with archive.open("rb") as source:
-        index = 0
-        while source.tell() < archive.stat().st_size:
-            part = directory / f"runtime.tar.part{index:03}"
-            remaining = PART_SIZE
-            with part.open("xb") as destination:
-                while remaining and (block := source.read(min(1024**2, remaining))):
-                    destination.write(block)
-                    remaining -= len(block)
-            parts.append({"name": part.name, "size": part.stat().st_size, "sha256": digest(part)})
-            index += 1
+    archive_hash = digest(archive)
+    if archive.stat().st_size <= PART_SIZE:
+        # The observed Hermes archive fits one asset. Rename instead of making
+        # a third full runtime copy on the space-constrained runner.
+        part = directory / "runtime.tar.part000"
+        archive.rename(part)
+        parts.append({"name": part.name, "size": part.stat().st_size, "sha256": archive_hash})
+    else:
+        with archive.open("rb") as source:
+            index = 0
+            while source.tell() < archive.stat().st_size:
+                part = directory / f"runtime.tar.part{index:03}"
+                remaining = PART_SIZE
+                with part.open("xb") as destination:
+                    while remaining and (block := source.read(min(1024**2, remaining))):
+                        destination.write(block)
+                        remaining -= len(block)
+                parts.append({"name": part.name, "size": part.stat().st_size, "sha256": digest(part)})
+                index += 1
     manifest = {"schema": 1, "package": "hermes-agent", "platform": "x86_64-linux", "storePath": path,
                 "producerBaseRevision": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
-                "lockSha256": digest(Path("flake.lock")), "archiveSha256": digest(archive), "parts": parts,
+                "lockSha256": digest(Path("flake.lock")), "archiveSha256": archive_hash, "parts": parts,
                 "closure": {p: {"narHash": x["narHash"], "narSize": x["narSize"]} for p, x in info.items()}}
     (directory / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n")
     # Only newly generated duplicates in this exact export directory. Evidence
     # and published parts remain; ready packages and Cachix are never deleted.
-    archive.unlink()
+    if archive.exists():
+        archive.unlink()
     shutil.rmtree(cache)
     print(f"Prepared Hermes release: {len(info)} signed paths, {sum(p['size'] for p in parts)} archive bytes", flush=True)
 

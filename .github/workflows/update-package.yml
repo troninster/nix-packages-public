@@ -19,6 +19,8 @@ jobs:
     outputs:
       base_sha: ${{ steps.base.outputs.sha }}
       changed: ${{ steps.update.outputs.changed }}
+    env:
+      HERMES_RELEASE_DIR: /nix/ci-artifacts/hermes-release
 
     steps:
       - name: Checkout
@@ -60,6 +62,10 @@ jobs:
           remove-haskell: true
           remove-codeql: true
           remove-docker-images: true
+
+      - name: Prepare Hermes archive on the Nix volume
+        if: ${{ inputs.package == 'hermes-agent' }}
+        run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
 
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
@@ -133,7 +139,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hermes-release-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/hermes-release
+          path: ${{ env.HERMES_RELEASE_DIR }}
           if-no-files-found: error
           retention-days: 1
 

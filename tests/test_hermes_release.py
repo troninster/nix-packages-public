@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,27 @@ SPEC.loader.exec_module(release)
 
 
 class HermesReleaseTests(unittest.TestCase):
+    def test_single_part_export_reuses_archive_and_keeps_matching_digest(self):
+        output = "/nix/store/" + "0" * 32 + "-hermes-agent-0.21.5"
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "release"
+            def command(args):
+                if args[:2] == ["nix", "path-info"]:
+                    return mock.Mock(stdout=json.dumps({output: {"narHash": "fixture", "narSize": 10}}))
+                if args[:2] == ["nix", "copy"]:
+                    (directory / "cache").mkdir()
+                    (directory / "cache/nix-cache-info").write_text("StoreDir: /nix/store\n")
+                return mock.Mock(stdout="a" * 40)
+            with mock.patch.object(release, "run", side_effect=command), \
+                    mock.patch.object(release, "add_signatures"):
+                release.export(output, directory)
+            manifest = json.loads((directory / "manifest.json").read_text())
+            self.assertEqual(len(manifest["parts"]), 1)
+            self.assertEqual(manifest["archiveSha256"], manifest["parts"][0]["sha256"])
+            self.assertEqual(release.digest(directory / manifest["parts"][0]["name"]), manifest["archiveSha256"])
+            self.assertFalse((directory / "runtime.tar").exists())
+            self.assertFalse((directory / "cache").exists())
+
     def test_core_selection_accepts_host_and_ci_nix_json(self):
         name = "0" * 32 + "-hermes-agent-0.21.5.drv"
         core = {"env": {"HERMES_NIX_BUILD": "1"}}
