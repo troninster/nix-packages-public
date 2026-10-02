@@ -60,6 +60,17 @@ builds each package separately; use it only when a local build is intentional.
 
 ## Consume From Another Flake
 
+Hermes is delivered as a complete signed runtime closure in this repository's
+GitHub Releases. The tag is `hermes-agent-x86_64-linux-<output-store-hash>`;
+`manifest.json` records the exact root, NAR identities and SHA256 checksums of
+archive parts (each below 2 GiB). Consumers must verify the existing trusted
+Nix signatures and exact output, never select a mutable "latest" build.
+Publication is required before advancing the automatic Hermes source pin.
+Only Hermes uses this channel; other components retain their existing delivery.
+`hermesReleaseDelivery` marks producer outputs that require this channel.
+New outputs still obtain signatures from Cachix; this does not make signing
+independent of Cachix or evict existing cached packages.
+
 Add the input:
 
 ```nix

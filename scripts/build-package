@@ -36,6 +36,14 @@ rm -f "$out_link"
 echo "Building .#${package}"
 nix build "${nix_flags[@]}" --out-link "$out_link" ".#${package}"
 
+if [[ "$package" == hermes-agent ]]; then
+  # The wrapper alone does not rebuild its Python dependency. Verify the
+  # actual core where same-path/different-NAR bytecode was observed.
+  core_drv="$(nix derivation show --recursive .#hermes-agent \
+    | python3 tools/hermes-release.py core-derivation)"
+  nix build "${nix_flags[@]}" --rebuild --no-link "$core_drv^out"
+fi
+
 if [[ -n "${CACHIX_CACHE_NAME:-}" && -n "${CACHIX_AUTH_TOKEN:-}" ]]; then
   if ! command -v cachix >/dev/null 2>&1; then
     echo "CACHIX_* is configured, but cachix is not available in PATH" >&2
@@ -44,6 +52,14 @@ if [[ -n "${CACHIX_CACHE_NAME:-}" && -n "${CACHIX_AUTH_TOKEN:-}" ]]; then
 
   echo "Pushing ${out_link} to Cachix cache ${CACHIX_CACHE_NAME}"
   cachix push "$CACHIX_CACHE_NAME" "$out_link"
+  if [[ "$package" == hermes-agent ]]; then
+    # Cachix supplies the existing signature, not durable Hermes retention.
+    # CI's separate write-permission job publishes the verified archive before
+    # accepting delivery/upstream publication. Other package lanes are unchanged.
+    python3 "${HERMES_RELEASE_TOOL:-tools/hermes-release.py}" export \
+      "$(readlink -f "$out_link")" "${HERMES_RELEASE_DIR:-${RUNNER_TEMP:-$PWD}/hermes-release}"
+    exit 0
+  fi
 else
   if [[ "$require_cachix_push" == "1" ]]; then
     echo "Cachix push is required, but CACHIX_CACHE_NAME or CACHIX_AUTH_TOKEN is not configured." >&2
