@@ -257,7 +257,7 @@ jobs:
         if: ${{ inputs.source_revision == '' && (matrix.package == 'bb-ide' || matrix.package == 'symphony-ts') }}
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s tests -p test_update_upstreams.py -k PnpmRuntimeReproducibilityTests -v
+          python3 -m unittest discover -s pkgs/bb-ide -p test_runtime_reproducibility.py -v
           nix build --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
           nix build --rebuild --keep-failed --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
 
