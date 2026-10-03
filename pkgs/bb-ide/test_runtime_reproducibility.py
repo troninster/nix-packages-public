@@ -43,6 +43,22 @@ class PnpmRuntimeReproducibilityTests(unittest.TestCase):
                     subprocess.run(["bash", "-eu", "-c", cleanup], env={**os.environ, "out": temp}, check=True)
                     self.assertFalse(config.exists())
                     self.assertEqual(addon.read_text(), "compiled runtime addon")
+                    for directory in ("apps", "packages", "plugins"):
+                        workspace = output / runtime / directory / "example"
+                        (workspace / ".turbo").mkdir(parents=True)
+                        (workspace / ".turbo" / "build.log").write_text("build-local state")
+                    app = output / runtime / "apps" / "app"
+                    (app / "node_modules" / ".vite").mkdir(parents=True)
+                    (app / "node_modules" / ".vite" / "cache").write_text("build-local state")
+                    (app / "dist").mkdir()
+                    (app / "dist" / "index.html").write_text("built application")
+                    cleanup = re.search(r'    find "\$out/share/bb/runtime/apps".*?\+\n', recipe, re.S).group(0)
+                    cleanup += next(line for line in recipe.splitlines() if 'rm -rf --' in line and '/.vite"' in line)
+                    subprocess.run(["bash", "-eu", "-c", cleanup], env={**os.environ, "out": temp}, check=True)
+                    for directory in ("apps", "packages", "plugins"):
+                        self.assertFalse((output / runtime / directory / "example" / ".turbo").exists())
+                    self.assertFalse((app / "node_modules" / ".vite").exists())
+                    self.assertEqual((app / "dist" / "index.html").read_text(), "built application")
 
     def test_public_ci_rebuilds_actual_runtime_before_cache_publication(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -55,6 +71,10 @@ class PnpmRuntimeReproducibilityTests(unittest.TestCase):
         self.assertIn("            exit 1", step)
         self.assertNotIn("continue-on-error", step)
         self.assertLess(ci.index(name), ci.index("      - name: Build package\n"))
+        self.assertIn('cp -- "$runtime/$declarations" "$RUNNER_TEMP/bb-declaration-comparison/first.d.ts"', step)
+        artifact = workflow_step(ci, "Preserve differing public BB SDK declarations")
+        self.assertIn("failure() && matrix.package == 'bb-ide'", artifact)
+        self.assertIn("bb-declaration-comparison/*.d.ts", artifact)
 
     def test_diagnostics_compare_symlinks_without_following_dependency_cycles(self):
         with tempfile.TemporaryDirectory() as temp:

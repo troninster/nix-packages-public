@@ -119,8 +119,11 @@ stdenv.mkDerivation (finalAttrs: {
     # node-gyp also records pnpm's random store_dir in generated build config.
     # Keep compiled addons, but omit this rebuild-only configuration.
     find "$out/share/bb/runtime/node_modules/.pnpm" -type f -path '*/build/config.gypi' -delete
-    find "$out/share/bb/runtime/apps" "$out/share/bb/runtime/packages" \
+    find "$out/share/bb/runtime/apps" "$out/share/bb/runtime/packages" "$out/share/bb/runtime/plugins" \
       -path '*/node_modules' -prune -o -type d -name .turbo -prune -exec rm -r -- {} +
+    # The React compiler's Vite cache records build-local state; built assets
+    # in app/dist are retained, and production never uses this compiler cache.
+    rm -rf -- "$out/share/bb/runtime/apps/app/node_modules/.vite"
     mkdir -p "$out/share/bb/desktop/node_modules" "$out/share/icons/hicolor/512x512/apps"
     cp -r apps/desktop/dist apps/desktop/assets apps/desktop/package.json "$out/share/bb/desktop/"
     ln -s ../../runtime/packages/bb-app "$out/share/bb/desktop/node_modules/bb-app"

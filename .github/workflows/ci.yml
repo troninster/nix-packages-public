@@ -264,9 +264,27 @@ jobs:
               # File names only: preserve the concrete mismatch in CI logs,
               # without dumping bundled dependency/configuration contents.
               diff -qr --no-dereference -- "$runtime" "$runtime.check" || true
+              # Preserve only this observed, generated public SDK output for
+              # comparison; never upload the runtime or configuration trees.
+              declarations="share/bb/runtime/packages/bb-app/dist/index.d.ts"
+              if [[ '${{ matrix.package }}' == bb-ide && -f "$runtime/$declarations" && -f "$runtime.check/$declarations" ]] \
+                && ! cmp -s -- "$runtime/$declarations" "$runtime.check/$declarations"; then
+                mkdir -p "$RUNNER_TEMP/bb-declaration-comparison"
+                cp -- "$runtime/$declarations" "$RUNNER_TEMP/bb-declaration-comparison/first.d.ts"
+                cp -- "$runtime.check/$declarations" "$RUNNER_TEMP/bb-declaration-comparison/rebuild.d.ts"
+              fi
             fi
             exit 1
           fi
+
+      - name: Preserve differing public BB SDK declarations
+        if: ${{ failure() && matrix.package == 'bb-ide' && inputs.source_revision == '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bb-declaration-comparison-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bb-declaration-comparison/*.d.ts
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Build package
         if: ${{ inputs.source_revision == '' }}
