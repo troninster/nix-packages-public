@@ -112,6 +112,15 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$out/share/bb/runtime"
     cp -R apps packages plugins examples tests node_modules package.json pnpm-workspace.yaml pnpm-lock.yaml LICENSE \
       "$out/share/bb/runtime/"
+    # Installer state contains prunedAt and a random temporary storeDir.
+    # Turbo build logs are diagnostics, not part of the Node runtime.
+    rm -f "$out/share/bb/runtime/node_modules/.modules.yaml" \
+      "$out/share/bb/runtime/node_modules/.pnpm-workspace-state-v1.json"
+    # node-gyp also records pnpm's random store_dir in generated build config.
+    # Keep compiled addons, but omit this rebuild-only configuration.
+    find "$out/share/bb/runtime/node_modules/.pnpm" -type f -path '*/build/config.gypi' -delete
+    find "$out/share/bb/runtime/apps" "$out/share/bb/runtime/packages" \
+      -path '*/node_modules' -prune -o -type d -name .turbo -prune -exec rm -r -- {} +
     mkdir -p "$out/share/bb/desktop/node_modules" "$out/share/icons/hicolor/512x512/apps"
     cp -r apps/desktop/dist apps/desktop/assets apps/desktop/package.json "$out/share/bb/desktop/"
     ln -s ../../runtime/packages/bb-app "$out/share/bb/desktop/node_modules/bb-app"
@@ -170,6 +179,8 @@ stdenv.mkDerivation (finalAttrs: {
     test -f "$out/share/bb/runtime/packages/bb-app/app/dist/index.html"
     test -f "$out/share/bb/desktop/dist/preload.cjs"
     test -f "$out/share/bb/desktop/dist/bb-app-bridge.mjs"
+    test ! -e "$out/share/bb/runtime/node_modules/.modules.yaml"
+    test ! -e "$out/share/bb/runtime/node_modules/.pnpm-workspace-state-v1.json"
     runHook postInstallCheck
   '';
 

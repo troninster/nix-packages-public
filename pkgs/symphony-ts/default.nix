@@ -59,11 +59,25 @@ stdenv.mkDerivation (finalAttrs: {
 
     mkdir -p "$out/lib/symphony-ts"
     cp -r dist node_modules package.json "$out/lib/symphony-ts/"
+    # pnpm writes a timestamp and random build-store path into installer state.
+    # The immutable Node runtime uses the dependency links, not this metadata.
+    rm -f "$out/lib/symphony-ts/node_modules/.modules.yaml" \
+      "$out/lib/symphony-ts/node_modules/.pnpm-workspace-state-v1.json"
 
     makeWrapper ${nodejs_22}/bin/node "$out/bin/symphony" \
       --add-flags "$out/lib/symphony-ts/dist/src/cli/main.js"
 
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    test ! -e "$out/lib/symphony-ts/node_modules/.modules.yaml"
+    test ! -e "$out/lib/symphony-ts/node_modules/.pnpm-workspace-state-v1.json"
+    "$out/bin/symphony" --help > "$TMPDIR/symphony-help"
+    grep -Fq 'symphony' "$TMPDIR/symphony-help"
+    runHook postInstallCheck
   '';
 
   meta = {
