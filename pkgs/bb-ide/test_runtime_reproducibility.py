@@ -51,7 +51,21 @@ class PnpmRuntimeReproducibilityTests(unittest.TestCase):
         self.assertIn("matrix.package == 'bb-ide' || matrix.package == 'symphony-ts'", step)
         self.assertIn("inputs.source_revision == ''", step)
         self.assertIn("nix build --rebuild --keep-failed --no-link", step)
-        self.assertIn('diff -qr -- "$runtime" "$runtime.check" || true', step)
+        self.assertIn('diff -qr --no-dereference -- "$runtime" "$runtime.check" || true', step)
         self.assertIn("            exit 1", step)
         self.assertNotIn("continue-on-error", step)
         self.assertLess(ci.index(name), ci.index("      - name: Build package\n"))
+
+    def test_diagnostics_compare_symlinks_without_following_dependency_cycles(self):
+        with tempfile.TemporaryDirectory() as temp:
+            roots = [Path(temp) / name for name in ("runtime", "runtime.check")]
+            for index, root in enumerate(roots):
+                root.mkdir()
+                (root / "dependency-link").symlink_to(".")
+                (root / "installer-state").write_text(f"volatile state {index}")
+            result = subprocess.run(["diff", "-qr", "--no-dereference", "--", *map(str, roots)],
+                                    text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("installer-state", result.stdout)
+            self.assertNotIn("volatile state", result.stdout)
+            self.assertNotIn("recursive", result.stderr)

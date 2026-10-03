@@ -263,7 +263,7 @@ jobs:
             if [[ -d "$runtime.check" ]]; then
               # File names only: preserve the concrete mismatch in CI logs,
               # without dumping bundled dependency/configuration contents.
-              diff -qr -- "$runtime" "$runtime.check" || true
+              diff -qr --no-dereference -- "$runtime" "$runtime.check" || true
             fi
             exit 1
           fi
