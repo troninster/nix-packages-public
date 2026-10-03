@@ -23,8 +23,8 @@ stdenv.mkDerivation (finalAttrs: {
   src = fetchFromGitHub {
     owner = "get-bb";
     repo = "bb";
-    rev = "cd12e7a9dfb372432cd748eafcd73d142e15c16f";
-    hash = "sha256-YjUud8YeEc8IDbU3Y0dE8xiRsWeZxnLhR+muvB7RoIQ=";
+    rev = "76a1ebcaf5fa038d8638daaad7aad3dafe2ae709";
+    hash = "sha256-ED7djyHDpnwYontN3QKCijuhFpCAqJmUFrruZDTJEL8=";
   };
 
   pnpmDepsHash = "sha256-M8jdPnVtkzpHmfvID5Hga00h4+YCTh6ZRfHAFuEPtEE=";
