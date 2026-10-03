@@ -116,6 +116,9 @@ stdenv.mkDerivation (finalAttrs: {
     # Turbo build logs are diagnostics, not part of the Node runtime.
     rm -f "$out/share/bb/runtime/node_modules/.modules.yaml" \
       "$out/share/bb/runtime/node_modules/.pnpm-workspace-state-v1.json"
+    # node-gyp also records pnpm's random store_dir in generated build config.
+    # Keep compiled addons, but omit this rebuild-only configuration.
+    find "$out/share/bb/runtime/node_modules/.pnpm" -type f -path '*/build/config.gypi' -delete
     find "$out/share/bb/runtime/apps" "$out/share/bb/runtime/packages" \
       -path '*/node_modules' -prune -o -type d -name .turbo -prune -exec rm -r -- {} +
     mkdir -p "$out/share/bb/desktop/node_modules" "$out/share/icons/hicolor/512x512/apps"

@@ -31,6 +31,18 @@ class PnpmRuntimeReproducibilityTests(unittest.TestCase):
                 self.assertFalse((modules / ".modules.yaml").exists())
                 self.assertFalse((modules / ".pnpm-workspace-state-v1.json").exists())
                 self.assertEqual((modules / "dependency" / "index.js").read_text(), "module.exports = 1")
+                if package == "bb-ide":
+                    config = dependency.parent / "build" / "config.gypi"
+                    config.parent.mkdir()
+                    config.write_text('{"store_dir": "/build/tmp.random"}')
+                    addon = config.parent / "Release" / "addon.node"
+                    addon.parent.mkdir()
+                    addon.write_text("compiled runtime addon")
+                    cleanup = next(line for line in recipe.splitlines()
+                                   if "find " in line and "config.gypi" in line)
+                    subprocess.run(["bash", "-eu", "-c", cleanup], env={**os.environ, "out": temp}, check=True)
+                    self.assertFalse(config.exists())
+                    self.assertEqual(addon.read_text(), "compiled runtime addon")
 
     def test_public_ci_rebuilds_actual_runtime_before_cache_publication(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
