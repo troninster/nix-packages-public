@@ -39,5 +39,7 @@ class PnpmRuntimeReproducibilityTests(unittest.TestCase):
         self.assertIn("matrix.package == 'bb-ide' || matrix.package == 'symphony-ts'", step)
         self.assertIn("inputs.source_revision == ''", step)
         self.assertIn("nix build --rebuild --keep-failed --no-link", step)
+        self.assertIn('diff -qr -- "$runtime" "$runtime.check" || true', step)
+        self.assertIn("            exit 1", step)
         self.assertNotIn("continue-on-error", step)
         self.assertLess(ci.index(name), ci.index("      - name: Build package\n"))

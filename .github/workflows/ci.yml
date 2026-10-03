@@ -258,8 +258,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s pkgs/bb-ide -p test_runtime_reproducibility.py -v
-          nix build --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
-          nix build --rebuild --keep-failed --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
+          runtime="$(nix build --no-link --print-out-paths --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}")"
+          if ! nix build --rebuild --keep-failed --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"; then
+            if [[ -d "$runtime.check" ]]; then
+              # File names only: preserve the concrete mismatch in CI logs,
+              # without dumping bundled dependency/configuration contents.
+              diff -qr -- "$runtime" "$runtime.check" || true
+            fi
+            exit 1
+          fi
 
       - name: Build package
         if: ${{ inputs.source_revision == '' }}
