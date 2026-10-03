@@ -18,13 +18,13 @@
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "bb-ide";
-  version = "0.44.0";
+  version = "0.45.0";
 
   src = fetchFromGitHub {
     owner = "get-bb";
     repo = "bb";
-    rev = "1b973d5584e10963018f4ae7d9c001e8ec09b99b";
-    hash = "sha256-3JJdztKfKbfKKgAAR1iGOkSwuRPw9snbwtAcDQ+YWHg=";
+    rev = "cd12e7a9dfb372432cd748eafcd73d142e15c16f";
+    hash = "sha256-YjUud8YeEc8IDbU3Y0dE8xiRsWeZxnLhR+muvB7RoIQ=";
   };
 
   pnpmDepsHash = "sha256-M8jdPnVtkzpHmfvID5Hga00h4+YCTh6ZRfHAFuEPtEE=";
