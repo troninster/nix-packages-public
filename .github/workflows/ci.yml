@@ -253,6 +253,14 @@ jobs:
         if: ${{ matrix.package == 'hermes-agent' }}
         run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
 
+      - name: Verify BB and Symphony runtime reproducibility before publishing
+        if: ${{ inputs.source_revision == '' && (matrix.package == 'bb-ide' || matrix.package == 'symphony-ts') }}
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_update_upstreams.py -k PnpmRuntimeReproducibilityTests -v
+          nix build --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
+          nix build --rebuild --keep-failed --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
+
       - name: Build package
         if: ${{ inputs.source_revision == '' }}
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
