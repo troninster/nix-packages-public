@@ -92,6 +92,8 @@ stdenv.mkDerivation (finalAttrs: {
     autoPatchelf node_modules
     pnpm --recursive rebuild better-sqlite3 node-pty fs-native-extensions @parcel/watcher esbuild
     pnpm exec turbo run build --filter=bb-app --filter=@bb/desktop --concurrency=1 --env-mode=loose
+    node --test ${./.}/normalize-sdk-dts.test.mjs
+    node ${./.}/normalize-sdk-dts.mjs packages/bb-app/dist/index.d.ts
     runHook postBuild
   '';
 
