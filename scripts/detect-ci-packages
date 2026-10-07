@@ -294,6 +294,10 @@ classify_file() {
       add_package "supabase-cli"
       add_package "symphony-ts"
       ;;
+    scripts/build-symphony-component | tests/test_symphony_component.py | .github/workflows/symphony-component.yml)
+      run_checks="true"
+      add_package "symphony-ts"
+      ;;
     scripts/ensure-hermes-registration-lifecycle | tests/test_hermes_registration_lifecycle.py | tools/hermes-release.py | tests/test_hermes_release.py)
       run_checks="true"
       add_package "hermes-agent"
