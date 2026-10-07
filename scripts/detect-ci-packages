@@ -294,7 +294,7 @@ classify_file() {
       add_package "supabase-cli"
       add_package "symphony-ts"
       ;;
-    scripts/build-symphony-component | tests/test_symphony_component.py | .github/workflows/symphony-component.yml)
+    scripts/build-symphony-component | tests/test_symphony_component.py | .github/workflows/symphony-component.yml | tools/symphony-release.py | tests/test_symphony_release.py | .github/workflows/symphony-release.yml)
       run_checks="true"
       add_package "symphony-ts"
       ;;

@@ -1,0 +1,226 @@
+name: Signed Symphony runtime release
+
+on:
+  pull_request:
+    paths:
+      - 'tools/symphony-release.py'
+      - 'tests/test_symphony_release.py'
+      - '.github/workflows/symphony-release.yml'
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: 'Exact approved main ancestor; empty captures current main'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Check Symphony release contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the reviewed change
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run focused release fixtures without signing authority
+        run: python3 -m unittest discover -s tests -p test_symphony_release.py -v
+
+  build:
+    name: Build and repeat the frozen Symphony component
+    needs: contracts
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'troninster/nix-packages-public' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    outputs:
+      source_revision: ${{ steps.source.outputs.revision }}
+      release_id: ${{ steps.identity.outputs.release_id }}
+    steps:
+      - name: Checkout trusted factory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Freeze the approved source
+        id: source
+        working-directory: trusted
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          revision="${SOURCE_REVISION:-$(git rev-parse HEAD)}"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$revision" origin/main
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout frozen component source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source.outputs.revision }}
+          path: source
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.28.5/install
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check trusted factory contracts
+        working-directory: trusted
+        run: python3 -m unittest discover -s tests -p test_symphony_release.py -v
+
+      - name: Build, repeat and smoke without signing authority
+        working-directory: source
+        run: |
+          set -euo pipefail
+          runtime="$(../trusted/scripts/build-symphony-component)"
+          python3 ../trusted/tools/symphony-release.py export-built "$PWD" "$runtime" "$RUNNER_TEMP/symphony-built"
+
+      - name: Record exact candidate identity
+        id: identity
+        run: |
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/symphony-built/record.json")); print("release_id="+r["releaseId"])' >> "$GITHUB_OUTPUT"
+
+      - name: Upload the unsigned runtime candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: symphony-built-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-built
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign validated runtime with the public Symphony authority
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted signing code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate approved source ancestry
+        working-directory: trusted
+        env:
+          SOURCE_REVISION: ${{ needs.build.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
+
+      - name: Checkout the exact source for input matching
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.source_revision }}
+          path: source
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.28.5/install
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Download this run's unsigned runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: symphony-built-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-built
+
+      - name: Validate and import unsigned bytes without the key
+        run: |
+          python3 trusted/tools/symphony-release.py prepare-sign "$RUNNER_TEMP/symphony-built" "$PWD/source" "$RUNNER_TEMP/symphony-sign-store"
+
+      - name: Sign only the already imported runtime
+        env:
+          SYMPHONY_RELEASE_SIGNING_KEY: ${{ secrets.SYMPHONY_RELEASE_SIGNING_KEY }}
+        run: |
+          python3 trusted/tools/symphony-release.py sign "$RUNNER_TEMP/symphony-built" "$RUNNER_TEMP/symphony-sign-store"
+
+      - name: Export the signed graph without the key
+        run: |
+          python3 trusted/tools/symphony-release.py export-signed "$RUNNER_TEMP/symphony-built" "$RUNNER_TEMP/symphony-sign-store" "$RUNNER_TEMP/symphony-signed"
+
+      - name: Upload the signed runtime candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: symphony-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-signed
+          if-no-files-found: error
+          retention-days: 7
+
+  cold:
+    name: Cold-import and smoke with no signing authority
+    needs: sign
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.28.5/install
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Download this run's signed runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: symphony-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-signed
+
+      - name: Prove a fresh import and isolated offline CLI
+        run: |
+          python3 trusted/tools/symphony-release.py cold "$RUNNER_TEMP/symphony-signed" "$RUNNER_TEMP/symphony-cold-store" "$RUNNER_TEMP/symphony-ready"
+
+      - name: Upload only the cold-verified READY candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: symphony-ready-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-ready
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish immutable bytes and the Symphony catalog
+    needs: [build, cold]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: symphony-component-catalog
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Download this run's cold-verified candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: symphony-ready-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-ready
+
+      - name: Publish without running the candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 trusted/tools/symphony-release.py publish "$RUNNER_TEMP/symphony-ready"
