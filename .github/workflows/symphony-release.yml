@@ -1,13 +1,23 @@
-name: Signed Symphony runtime release
+name: Signed public component runtime release
+run-name: 'component:${{ inputs.component }}'
 
 on:
   pull_request:
     paths:
+      - 'components/**'
+      - 'tools/component-*.py'
+      - 'scripts/build-component'
+      - 'tests/test_component*.py'
       - 'tools/symphony-release.py'
       - 'tests/test_symphony_release.py'
       - '.github/workflows/symphony-release.yml'
   workflow_dispatch:
     inputs:
+      component:
+        description: 'Enrolled public component'
+        required: true
+        default: symphony-ts
+        type: string
       source_revision:
         description: 'Exact approved main ancestor; empty captures current main'
         required: false
@@ -24,6 +34,9 @@ on:
 permissions:
   contents: read
 
+env:
+  COMPONENT: ${{ inputs.component }}
+
 jobs:
   contracts:
     name: Check Symphony release contracts
@@ -35,7 +48,9 @@ jobs:
           persist-credentials: false
 
       - name: Run focused release fixtures without signing authority
-        run: python3 -m unittest discover -s tests -p test_symphony_release.py -v
+        run: |
+          python3 -m unittest discover -s tests -p test_symphony_release.py -v
+          python3 -m unittest discover -s tests -p test_component_enrollment.py -v
 
   build:
     name: Build and repeat the frozen Symphony component
@@ -45,6 +60,7 @@ jobs:
     outputs:
       source_revision: ${{ steps.source.outputs.revision }}
       release_id: ${{ steps.identity.outputs.release_id }}
+      artifact_prefix: ${{ steps.identity.outputs.artifact_prefix }}
     steps:
       - name: Checkout trusted factory
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,18 +104,19 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          runtime="$(../trusted/scripts/build-symphony-component)"
-          python3 ../trusted/tools/symphony-release.py export-built "$PWD" "$runtime" "$RUNNER_TEMP/symphony-built"
+          runtime="$(bash ../trusted/scripts/build-component "$COMPONENT")"
+          python3 ../trusted/tools/component-release.py --component "$COMPONENT" export-built "$PWD" "$runtime" "$RUNNER_TEMP/symphony-built"
 
       - name: Record exact candidate identity
         id: identity
         run: |
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/symphony-built/record.json")); print("release_id="+r["releaseId"])' >> "$GITHUB_OUTPUT"
+          python3 -c 'import json,os,pathlib; d=json.load(open("trusted/components/"+os.environ["COMPONENT"]+".json")); print("artifact_prefix="+pathlib.Path(d["smoke"]["argv"][0]).name)' >> "$GITHUB_OUTPUT"
 
       - name: Upload the unsigned runtime candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: symphony-built-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.identity.outputs.artifact_prefix }}-built-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/symphony-built
           if-no-files-found: error
           retention-days: 7
@@ -143,34 +160,34 @@ jobs:
       - name: Download this run's unsigned runtime
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: symphony-built-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.artifact_prefix }}-built-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/symphony-built
 
       - name: Validate and import unsigned bytes without the key
         run: |
-          python3 trusted/tools/symphony-release.py prepare-sign "$RUNNER_TEMP/symphony-built" "$PWD/source" "$RUNNER_TEMP/symphony-sign-store"
+          python3 trusted/tools/component-release.py --component "$COMPONENT" prepare-sign "$RUNNER_TEMP/symphony-built" "$PWD/source" "$RUNNER_TEMP/symphony-sign-store"
 
       - name: Sign only the already imported runtime
         env:
           SYMPHONY_RELEASE_SIGNING_KEY: ${{ secrets.SYMPHONY_RELEASE_SIGNING_KEY }}
         run: |
-          python3 trusted/tools/symphony-release.py sign "$RUNNER_TEMP/symphony-built" "$RUNNER_TEMP/symphony-sign-store"
+          python3 trusted/tools/component-release.py --component "$COMPONENT" sign "$RUNNER_TEMP/symphony-built" "$RUNNER_TEMP/symphony-sign-store"
 
       - name: Export the signed graph without the key
         run: |
-          python3 trusted/tools/symphony-release.py export-signed "$RUNNER_TEMP/symphony-built" "$RUNNER_TEMP/symphony-sign-store" "$RUNNER_TEMP/symphony-signed"
+          python3 trusted/tools/component-release.py --component "$COMPONENT" export-signed "$RUNNER_TEMP/symphony-built" "$RUNNER_TEMP/symphony-sign-store" "$RUNNER_TEMP/symphony-signed"
 
       - name: Upload the signed runtime candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: symphony-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.artifact_prefix }}-signed-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/symphony-signed
           if-no-files-found: error
           retention-days: 7
 
   cold:
     name: Cold-import and smoke with no signing authority
-    needs: sign
+    needs: [build, sign]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout trusted verifier
@@ -190,17 +207,17 @@ jobs:
       - name: Download this run's signed runtime
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: symphony-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.artifact_prefix }}-signed-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/symphony-signed
 
       - name: Prove a fresh import and isolated offline CLI
         run: |
-          python3 trusted/tools/symphony-release.py cold "$RUNNER_TEMP/symphony-signed" "$RUNNER_TEMP/symphony-cold-store" "$RUNNER_TEMP/symphony-ready"
+          python3 trusted/tools/component-release.py --component "$COMPONENT" cold "$RUNNER_TEMP/symphony-signed" "$RUNNER_TEMP/symphony-cold-store" "$RUNNER_TEMP/symphony-ready"
 
       - name: Upload only the cold-verified READY candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: symphony-ready-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.artifact_prefix }}-ready-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/symphony-ready
           if-no-files-found: error
           retention-days: 7
@@ -212,7 +229,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: symphony-component-catalog
+      group: public-component-catalog
       cancel-in-progress: false
     steps:
       - name: Checkout trusted publisher
@@ -225,13 +242,13 @@ jobs:
       - name: Download this run's cold-verified candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: symphony-ready-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.artifact_prefix }}-ready-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/symphony-ready
 
       - name: Publish without running the candidate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 trusted/tools/symphony-release.py publish "$RUNNER_TEMP/symphony-ready"
+        run: python3 trusted/tools/component-release.py --component "$COMPONENT" publish "$RUNNER_TEMP/symphony-ready"
 
   recover-publish:
     name: Recover publication of the exact original cold proof
@@ -242,7 +259,7 @@ jobs:
       actions: read
       contents: write
     concurrency:
-      group: symphony-component-catalog
+      group: public-component-catalog
       cancel-in-progress: false
     steps:
       - name: Checkout trusted recovery publisher
@@ -257,4 +274,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ORIGIN_READY_RUN: ${{ inputs.origin_ready_run }}
           ORIGIN_READY_ATTEMPT: ${{ inputs.origin_ready_attempt }}
-        run: python3 trusted/tools/symphony-release.py recover-publish "$ORIGIN_READY_RUN" "$ORIGIN_READY_ATTEMPT" "$RUNNER_TEMP/symphony-origin-ready"
+        run: python3 trusted/tools/component-release.py --component "$COMPONENT" recover-publish "$ORIGIN_READY_RUN" "$ORIGIN_READY_ATTEMPT" "$RUNNER_TEMP/symphony-origin-ready"

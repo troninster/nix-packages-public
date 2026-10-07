@@ -10,9 +10,10 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("symphony_release", ROOT / "tools/symphony-release.py")
+SPEC = importlib.util.spec_from_file_location("symphony_release", ROOT / "tools/component-release.py")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
+release.configure("symphony-ts")
 RUNTIME = "/nix/store/" + "0" * 32 + "-symphony-ts-0.1.8"
 DEPENDENCY = "/nix/store/" + "1" * 32 + "-nodejs-22.0.0"
 HASH = "sha256-" + base64.b64encode(b"x" * 32).decode()

@@ -229,17 +229,27 @@ sys.exit(0 if old_count == new_count == 1 and old == new else 1)
 PY
 }
 
+select_enrolled_components() {
+  local descriptor component
+  shopt -s nullglob
+  for descriptor in components/*.json; do
+    component="$(basename "$descriptor" .json)"
+    is_known_package "$component" || { echo "Unknown enrolled package" >&2; exit 2; }
+    add_package "$component"
+  done
+}
+
 is_exact_symphony_handoff() {
   # This one-time reviewed handoff is not a general shared-file exemption.
   local file="$1" old_expected new_expected old_actual new_actual
   case "$file" in
     scripts/update-upstream-inputs)
-      old_expected=758a21acd9f5208628c3fc4141b729341fa2523cfa53802f23d1a45abdc8cda3
-      new_expected=937588c8e18bd5fa736a6524011c098e9f1fb718fbff1898df0925550205e835
+      old_expected=937588c8e18bd5fa736a6524011c098e9f1fb718fbff1898df0925550205e835
+      new_expected=1c25f0235ad1c7dc6609786eec6a4739ef9cde1d3b5c9158d199bae66ad86859
       ;;
     .github/workflows/ci.yml)
-      old_expected=5f672c9470ca9db8fe05d936b5c628a98610ad95e32828e4ef3bd289e9b1cdf8
-      new_expected=36066ae06173c2ac1a71edf718915c438fc890b3b0e6725ff5e8a138fb93dc93
+      old_expected=36066ae06173c2ac1a71edf718915c438fc890b3b0e6725ff5e8a138fb93dc93
+      new_expected=d36037cc42cba4582a76c09a4780f5c9d62f4e7f3b2ebc64e4e3b54c0d7d6ee7
       ;;
     *) return 1 ;;
   esac
@@ -317,7 +327,16 @@ classify_file() {
       add_package "supabase-cli"
       add_package "symphony-ts"
       ;;
-    scripts/build-symphony-component | tests/test_symphony_component.py | .github/workflows/symphony-component.yml | tools/symphony-release.py | tests/test_symphony_release.py | .github/workflows/symphony-release.yml | tools/symphony-source.py | tools/symphony-reconcile.py | tests/test_symphony_source.py | tests/test_symphony_reconcile.py | .github/workflows/symphony-source.yml)
+    components/*.json)
+      run_checks="true"
+      local_package="${file#components/}"
+      add_package "${local_package%.json}"
+      ;;
+    tools/component-*.py | scripts/build-component | tests/test_component*.py | tests/fixtures/symphony-c77-ready.json | .github/workflows/component-source-worker.yml | .github/workflows/symphony-component.yml | .github/workflows/symphony-release.yml | .github/workflows/symphony-source.yml)
+      run_checks="true"
+      select_enrolled_components
+      ;;
+    scripts/build-symphony-component | tests/test_symphony_component.py | tools/symphony-release.py | tests/test_symphony_release.py | tools/symphony-source.py | tools/symphony-reconcile.py | tests/test_symphony_source.py | tests/test_symphony_reconcile.py)
       run_checks="true"
       add_package "symphony-ts"
       ;;

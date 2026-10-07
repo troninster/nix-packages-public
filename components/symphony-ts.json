@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "component": "symphony-ts",
+  "repository": "troninster/nix-packages-public",
+  "directory": "pkgs/symphony-ts",
+  "platform": "x86_64-linux",
+  "packageAttr": "symphony-ts",
+  "packageName": "symphony-ts",
+  "verificationPolicy": "symphony-repeat-cold-v1",
+  "sourceFiles": ["pkgs/symphony-ts/default.nix", "pkgs/symphony-ts/flake.nix", "pkgs/symphony-ts/flake.lock"],
+  "sourceAdapter": "pkgs/symphony-ts/update-source.py",
+  "smoke": {
+    "argv": ["bin/symphony", "--help"],
+    "contains": "symphony",
+    "absentPaths": ["lib/symphony-ts/node_modules/.modules.yaml", "lib/symphony-ts/node_modules/.pnpm-workspace-state-v1.json"]
+  }
+}
