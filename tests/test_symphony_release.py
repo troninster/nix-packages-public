@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,24 @@ def bundle(directory, stage="SIGNED"):
                        ("proof.json", release.proof(value, delivery, stage))):
         release.write_json(directory / name, body)
     return value, delivery
+
+
+def native_origin(archive):
+    return {
+        "actions/workflows/symphony-release.yml": {"id": 7, "path": ".github/workflows/symphony-release.yml"},
+        "actions/runs/123/attempts/1": {"id": 123, "run_attempt": 1, "workflow_id": 7,
+            "repository": {"full_name": release.REPO}, "head_repository": {"full_name": release.REPO},
+            "event": "workflow_dispatch", "head_branch": "main", "head_sha": "f" * 40,
+            "status": "completed", "conclusion": "failure"},
+        "compare/" + "f" * 40 + "...main": {"status": "ahead", "merge_base_commit": {"sha": "f" * 40}},
+        "actions/runs/123/attempts/1/jobs?per_page=100": {"total_count": 1, "jobs": [
+            {"name": "Cold-import and smoke with no signing authority", "run_id": 123,
+             "status": "completed", "conclusion": "success"}]},
+        "actions/runs/123/artifacts?per_page=100": {"total_count": 1, "artifacts": [
+            {"id": 42, "name": "symphony-ready-123-1", "expired": False,
+             "digest": "sha256:" + release.digest(archive), "size_in_bytes": archive.stat().st_size,
+             "workflow_run": {"id": 123, "head_sha": "f" * 40}}]},
+    }
 
 
 class SymphonyReleaseTests(unittest.TestCase):
@@ -147,23 +166,119 @@ class SymphonyReleaseTests(unittest.TestCase):
             fixture = Path(temporary)
             value, delivery = bundle(fixture / "ready", "READY")
             paths = [fixture / "ready/release.json", fixture / "ready/runtime.tar.part000"]
-            existing = {"draft": False, "assets": [{"name": path.name, "state": "uploaded",
+            existing = {"draft": False, "target_commitish": value["source"]["revision"],
+                        "assets": [{"name": path.name, "state": "uploaded",
                          "size": path.stat().st_size, "digest": "sha256:" + release.digest(path)} for path in paths]}
             existing["assets"][0]["digest"] = "sha256:" + "0" * 64
-            with mock.patch.object(release, "api", return_value=existing), mock.patch.object(release, "run") as mutation:
+            with mock.patch.object(release, "find_release", return_value=existing), mock.patch.object(release, "run") as mutation:
                 with self.assertRaises(RuntimeError):
                     release.release_assets(fixture / "ready", value, delivery)
                 mutation.assert_not_called()
 
+    def test_owned_draft_discovery_resumes_by_id_without_recreating_or_tag_endpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            value, delivery = bundle(fixture / "ready", "READY")
+            tag = f"symphony-ts-x86_64-linux-{value['releaseId']}"
+            paths = [fixture / "ready/release.json", fixture / "ready/runtime.tar.part000"]
+            existing = {"id": 405829918, "tag_name": tag, "draft": True,
+                        "target_commitish": value["source"]["revision"],
+                        "assets": [{"name": path.name, "state": "uploaded", "size": path.stat().st_size,
+                                    "digest": "sha256:" + release.digest(path)} for path in paths]}
+
+            def owned(path, method="GET", payload=None):
+                self.assertNotIn("releases/tags/", path)
+                if path.startswith("releases?"):
+                    return [existing]
+                self.assertEqual(path, "releases/405829918")
+                if method == "PATCH":
+                    self.assertEqual(payload, {"draft": False, "prerelease": True, "make_latest": "false"})
+                return existing
+
+            with mock.patch.object(release, "api", side_effect=owned) as api, \
+                    mock.patch.object(release, "run") as mutation:
+                self.assertEqual(release.release_assets(fixture / "ready", value, delivery), tag)
+                mutation.assert_not_called()
+                self.assertEqual(api.call_args_list[-1].args[1], "PATCH")
+            with mock.patch.object(release, "api", return_value=[existing, existing]):
+                with self.assertRaises(RuntimeError):
+                    release.find_release(tag)
+
+    def test_recovery_authenticates_native_cold_artifact_and_preserves_original_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            value, delivery = bundle(fixture / "original", "READY")
+            archive = fixture / "fixture.zip"
+            with zipfile.ZipFile(archive, "w") as zipped:
+                for path in (fixture / "original").iterdir():
+                    zipped.write(path, path.name)
+            receipts = native_origin(archive)
+            receipt = (fixture / "original/proof.json").read_bytes()
+            os.environ.update(GITHUB_RUN_ID="456", GITHUB_WORKFLOW_SHA="e" * 40)
+
+            def download(args, stdout, stderr, env):
+                self.assertEqual(args, ["gh", "api", f"repos/{release.REPO}/actions/artifacts/42/zip"])
+                self.assertNotIn(release.SIGNING_ENV, env)
+                stdout.write(archive.read_bytes())
+                return mock.Mock(returncode=0)
+
+            def published(directory, origin):
+                self.assertEqual(origin, {"runId": "123", "runAttempt": "1", "workflowRevision": "f" * 40})
+                self.assertEqual(release.load_bundle(directory, "READY", origin), (value, delivery))
+                self.assertEqual((directory / "proof.json").read_bytes(), receipt)
+                with self.assertRaises(RuntimeError):
+                    release.load_bundle(directory, "READY")  # Must not relabel as the current run.
+                return "published"
+
+            with mock.patch.object(release, "api", side_effect=lambda path: receipts[path]), \
+                    mock.patch.object(release.subprocess, "run", side_effect=download), \
+                    mock.patch.object(release, "publish", side_effect=published):
+                self.assertEqual(release.recover_publish("123", "1", fixture / "recovered"), "published")
+
+    def test_recovery_rejects_failed_cold_or_native_archive_digest_mismatch_before_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            archive = fixture / "fixture.zip"
+            archive.write_bytes(b"fixture native artifact")
+            receipts = native_origin(archive)
+            cold = receipts["actions/runs/123/attempts/1/jobs?per_page=100"]["jobs"][0]
+            cold["conclusion"] = "failure"
+            with mock.patch.object(release, "api", side_effect=lambda path: receipts[path]), \
+                    mock.patch.object(release.subprocess, "run") as download, \
+                    mock.patch.object(release, "publish") as publication:
+                with self.assertRaises(RuntimeError):
+                    release.recover_publish("123", "1", fixture / "failed-cold")
+                download.assert_not_called()
+                publication.assert_not_called()
+            cold["conclusion"] = "success"
+
+            def corrupted(args, stdout, **kwargs):
+                stdout.write(b"wrong native artifact bytes")
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(release, "api", side_effect=lambda path: receipts[path]), \
+                    mock.patch.object(release.subprocess, "run", side_effect=corrupted), \
+                    mock.patch.object(release, "publish") as publication:
+                with self.assertRaises(RuntimeError):
+                    release.recover_publish("123", "1", fixture / "bad-digest")
+                publication.assert_not_called()
+                self.assertFalse((fixture / "bad-digest").exists())
+
     def test_main_advancement_is_allowed_but_foreign_source_and_catalog_races_are_not(self):
         workflow = (ROOT / ".github/workflows/symphony-release.yml").read_text()
-        self.assertEqual(workflow.count("ref: ${{ github.workflow_sha }}"), 4)
+        self.assertEqual(workflow.count("ref: ${{ github.workflow_sha }}"), 5)
         self.assertNotIn("ref: main", workflow)
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("  pull_request:\n", workflow)
         self.assertIn("run: python3 -m unittest discover -s tests -p test_symphony_release.py -v", workflow)
         self.assertEqual(release.MAX_PARTS, 16)
+        self.assertIn("inputs.origin_ready_run == '' && inputs.origin_ready_attempt == ''", workflow)
+        recovery = workflow.split("  recover-publish:\n", 1)[1]
+        self.assertNotIn("Install Nix", recovery)
+        self.assertNotIn("secrets.", recovery)
+        self.assertIn("actions: read", recovery)
+        self.assertIn("needs: contracts", recovery)
         with mock.patch.object(release, "api", return_value={"status": "ahead", "merge_base_commit": {"sha": "a" * 40}}):
             release.approved_ancestor("a" * 40)
         with mock.patch.object(release, "api", return_value={"status": "ahead", "merge_base_commit": {"sha": "b" * 40}}):

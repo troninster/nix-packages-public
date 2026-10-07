@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tarfile
 import tempfile
 from urllib.parse import quote
+import zipfile
 
 
 REPO = "troninster/nix-packages-public"
@@ -171,20 +173,23 @@ def trust_options():
     return ["--option", "trusted-public-keys", PUBLIC_KEY, "--option", "require-sigs", "true"]
 
 
-def proof(record, delivery, stage):
+def proof(record, delivery, stage, origin=None):
     run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
     workflow_sha = os.environ.get("GITHUB_WORKFLOW_SHA", "")
     require(run_id.isdigit() and attempt.isdigit(), "Proof requires an exact workflow run/attempt")
     require(os.environ.get("GITHUB_WORKFLOW_REF") == WORKFLOW and SHA.fullmatch(workflow_sha),
             "Proof requires the reviewed main workflow identity")
+    if origin is not None:
+        # Only recover_publish supplies this context, after native Actions authentication.
+        run_id, attempt, workflow_sha = origin["runId"], origin["runAttempt"], origin["workflowRevision"]
     return {"schema": 1, "stage": stage, "runId": run_id, "runAttempt": attempt,
             "job": {"BUILT": "build", "SIGNED": "sign", "READY": "cold"}[stage],
             "workflowRef": WORKFLOW, "workflowRevision": workflow_sha,
             "releaseId": record["releaseId"], "recordSha256": sha(record), "deliverySha256": sha(delivery)}
 
 
-def check_proof(record, delivery, receipt, stage):
-    require(receipt == proof(record, delivery, stage), "Artifact does not match this run/attempt/stage")
+def check_proof(record, delivery, receipt, stage, origin=None):
+    require(receipt == proof(record, delivery, stage, origin), "Artifact does not match this run/attempt/stage")
 
 
 def archive_cache(cache, directory):
@@ -250,7 +255,7 @@ def export_built(source, root, directory):
     export_bundle(record, directory)
 
 
-def load_bundle(directory, stage):
+def load_bundle(directory, stage, origin=None):
     record = validate_record(json.loads((directory / "record.json").read_bytes()), stage)
     delivery = json.loads((directory / "release.json").read_bytes())
     shape(delivery, ("schema", "component", "platform", "releaseId", "storePath", "archiveSha256", "parts", "closure"), "delivery")
@@ -269,7 +274,7 @@ def load_bundle(directory, stage):
                 "Runtime part bytes differ")
     require({path.name for path in directory.iterdir()} == {"record.json", "release.json", "proof.json", *(p["name"] for p in delivery["parts"])},
             "Unexpected candidate artifact files")
-    check_proof(record, delivery, json.loads((directory / "proof.json").read_bytes()), stage)
+    check_proof(record, delivery, json.loads((directory / "proof.json").read_bytes()), stage, origin)
     return record, delivery
 
 
@@ -470,17 +475,43 @@ def catalog_snapshot(record):
     return revision, commit["tree"]["sha"], promote, prior.get(record["releaseId"])
 
 
+def find_release(tag):
+    # The tags endpoint does not expose drafts. Complete, bounded owned-repo discovery
+    # also rejects duplicate tags rather than selecting an arbitrary draft.
+    matches = []
+    for page in range(1, 11):
+        releases = api(f"releases?per_page=100&page={page}")
+        require(isinstance(releases, list), "Invalid owned release list")
+        matches.extend(item for item in releases if item.get("tag_name") == tag)
+        if len(releases) < 100:
+            break
+    else:
+        raise RuntimeError("Owned release discovery exceeded its bound")
+    require(len(matches) <= 1, "Conflicting releases for the immutable tag")
+    if not matches:
+        return None
+    release_id = matches[0].get("id")
+    require(type(release_id) is int and release_id > 0, "Invalid owned release ID")
+    existing = api(f"releases/{release_id}")
+    require(existing.get("id") == release_id and existing.get("tag_name") == tag,
+            "Owned release changed during discovery")
+    return existing
+
+
 def release_assets(directory, record, delivery):
     tag = f"{COMPONENT}-{PLATFORM}-{record['releaseId']}"
     assets = [directory / "release.json", *(directory / part["name"] for part in delivery["parts"])]
-    existing = api(f"releases/tags/{tag}", missing=True)
+    existing = find_release(tag)
     if existing is None:
         run(["gh", "release", "create", tag, "--repo", REPO, "--target", record["source"]["revision"],
              "--draft", "--prerelease", "--latest=false", "--title", f"Signed Symphony {record['package']['version']}",
              "--notes", "Complete signed Symphony runtime; repeat build and isolated cold import verified.", *map(str, assets)])
-        existing = api(f"releases/tags/{tag}")
+        existing = find_release(tag)
+    require(existing is not None and existing.get("target_commitish") == record["source"]["revision"],
+            "Immutable release source differs")
     remote = {asset["name"]: asset for asset in existing["assets"]}
-    require(set(remote) == {asset.name for asset in assets}, "Immutable release asset set differs")
+    require(len(remote) == len(existing["assets"]) and set(remote) == {asset.name for asset in assets},
+            "Immutable release asset set differs")
     for asset in assets:
         entry = remote[asset.name]
         require(entry["state"] == "uploaded" and entry["size"] == asset.stat().st_size
@@ -490,8 +521,8 @@ def release_assets(directory, record, delivery):
     return tag
 
 
-def publish(directory):
-    record, delivery = load_bundle(directory, "READY")
+def publish(directory, origin=None):
+    record, delivery = load_bundle(directory, "READY", origin)
     approved_ancestor(record["source"]["revision"])
     revision, base_tree, promote, previous = catalog_snapshot(record)
     tag = release_assets(directory, record, delivery)
@@ -521,6 +552,72 @@ def publish(directory):
     return tag
 
 
+def ready_origin(run_id, attempt):
+    require(re.fullmatch(r"[1-9][0-9]*", run_id) and re.fullmatch(r"[1-9][0-9]*", attempt),
+            "Recovery requires both exact origin run and attempt")
+    workflow = api("actions/workflows/symphony-release.yml")
+    require(workflow.get("path") == ".github/workflows/symphony-release.yml"
+            and type(workflow.get("id")) is int and workflow["id"] > 0, "Foreign origin workflow")
+    native = api(f"actions/runs/{run_id}/attempts/{attempt}")
+    require(native.get("id") == int(run_id) and native.get("run_attempt") == int(attempt)
+            and native.get("workflow_id") == workflow.get("id")
+            and native.get("repository", {}).get("full_name") == REPO
+            and native.get("head_repository", {}).get("full_name") == REPO
+            and native.get("event") == "workflow_dispatch" and native.get("head_branch") == "main"
+            and native.get("status") == "completed" and SHA.fullmatch(native.get("head_sha", "")),
+            "Origin is not the owned completed main factory attempt")
+    approved_ancestor(native["head_sha"])
+    jobs = api(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
+    require(type(jobs.get("total_count")) is int and jobs["total_count"] == len(jobs.get("jobs", []))
+            and jobs["total_count"] <= 100, "Origin job receipt list is incomplete")
+    cold_jobs = [job for job in jobs["jobs"] if job.get("name") == "Cold-import and smoke with no signing authority"]
+    require(len(cold_jobs) == 1 and cold_jobs[0].get("run_id") == int(run_id)
+            and cold_jobs[0].get("status") == "completed" and cold_jobs[0].get("conclusion") == "success",
+            "Origin attempt has no unique successful cold job")
+    artifacts = api(f"actions/runs/{run_id}/artifacts?per_page=100")
+    require(type(artifacts.get("total_count")) is int and artifacts["total_count"] == len(artifacts.get("artifacts", []))
+            and artifacts["total_count"] <= 100, "Origin artifact receipt list is incomplete")
+    matches = [item for item in artifacts["artifacts"] if item.get("name") == f"symphony-ready-{run_id}-{attempt}"]
+    require(len(matches) == 1, "Origin READY artifact is missing or ambiguous")
+    artifact = matches[0]
+    require(type(artifact.get("id")) is int and artifact["id"] > 0 and artifact.get("expired") is False
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", artifact.get("digest", ""))
+            and type(artifact.get("size_in_bytes")) is int
+            and 0 < artifact["size_in_bytes"] <= PART_SIZE * MAX_PARTS + 3 * 1024**2,
+            "Invalid or expired native READY artifact")
+    if "workflow_run" in artifact:
+        require(artifact["workflow_run"].get("id") == int(run_id)
+                and artifact["workflow_run"].get("head_sha") == native["head_sha"], "Foreign artifact provenance")
+    return {"runId": run_id, "runAttempt": attempt, "workflowRevision": native["head_sha"]}, artifact
+
+
+def recover_publish(run_id, attempt, directory):
+    origin, artifact = ready_origin(run_id, attempt)
+    archive = directory.with_suffix(".zip")
+    env = {key: value for key, value in os.environ.items() if key != SIGNING_ENV}
+    with archive.open("xb") as stream:
+        result = subprocess.run(["gh", "api", f"repos/{REPO}/actions/artifacts/{artifact['id']}/zip"],
+                                stdout=stream, stderr=subprocess.PIPE, env=env)
+    require(result.returncode == 0 and archive.stat().st_size <= PART_SIZE * MAX_PARTS + 3 * 1024**2
+            and "sha256:" + digest(archive) == artifact["digest"], "Native artifact archive digest differs")
+    directory.mkdir()
+    with zipfile.ZipFile(archive) as bundle:
+        members = bundle.infolist()
+        names = [member.filename for member in members]
+        require(len(names) == len(set(names)) and 4 <= len(names) <= MAX_PARTS + 3,
+                "Unexpected origin archive members")
+        for member in members:
+            metadata = member.filename in ("record.json", "release.json", "proof.json")
+            require(metadata or PART.fullmatch(member.filename), "Foreign origin archive member")
+            require(stat.S_IFMT(member.external_attr >> 16) in (0, stat.S_IFREG)
+                    and 0 < member.file_size <= (1024**2 if metadata else PART_SIZE), "Invalid origin archive file")
+            with bundle.open(member) as source, (directory / member.filename).open("xb") as destination:
+                for block in iter(lambda: source.read(1024**2), b""):
+                    destination.write(block)
+    # Never rewrite the original cold receipt, record, or signed runtime bytes.
+    return publish(directory, origin)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -538,6 +635,10 @@ def main():
             command.add_argument("output", type=Path)
     command = commands.add_parser("publish")
     command.add_argument("directory", type=Path)
+    command = commands.add_parser("recover-publish")
+    command.add_argument("run_id")
+    command.add_argument("attempt")
+    command.add_argument("directory", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "export-built":
@@ -550,9 +651,11 @@ def main():
             export_signed(args.directory.resolve(), args.store_root.resolve(), args.output.resolve())
         elif args.command == "cold":
             cold(args.directory.resolve(), args.store_root.resolve(), args.output.resolve())
+        elif args.command == "recover-publish":
+            print(recover_publish(args.run_id, args.attempt, args.directory.resolve()))
         else:
             print(publish(args.directory.resolve()))
-    except (RuntimeError, OSError, ValueError, KeyError, TypeError, tarfile.TarError):
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, zipfile.BadZipFile):
         parser.exit(1, "Symphony release failed; raw payloads and credentials withheld\n")
 
 
