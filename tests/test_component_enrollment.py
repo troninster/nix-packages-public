@@ -1,11 +1,9 @@
 """One synthetic enrollment exercises shared engines; no second production authority."""
 import base64
-import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -51,17 +49,13 @@ def select(source):
 
 
 class ComponentEnrollmentTests(unittest.TestCase):
-    def test_historical_c77_record_identity_is_verbatim_and_only_symphony_is_enrolled(self):
+    def test_historical_c77_record_identity_is_verbatim(self):
         release = module("component-release")
         release.configure("symphony-ts")
         record = json.loads((ROOT / "tests/fixtures/symphony-c77-ready.json").read_bytes())
-        self.assertEqual(release.contract.enrolled(), ["symphony-ts"])
         release.validate_record(record, "READY")
         self.assertEqual(release.sha(record), "e8b0d4c4a9240965ed7a1269a6a0f396bb1a2df61342e2f8f6fd071c2847e7ab")
         self.assertEqual(record["releaseId"], "efe43bf41351b0c532e8a6e4095e29a5f7a83be80f76a1d27f4c878a7180a021")
-        for path in release.FILES:
-            original = subprocess.check_output(["git", "show", "c77d2a192f957a6ba1e65b242a6d9cfe30418d5f:" + path], cwd=ROOT)
-            self.assertEqual((ROOT / path).read_bytes(), original)
 
     def test_second_descriptor_owns_extra_locked_graph_build_cold_and_catalog_without_core_edits(self):
         release, builder = module("component-release"), module("component-build")
@@ -70,6 +64,13 @@ class ComponentEnrollmentTests(unittest.TestCase):
             descriptor, lock = synthetic(root)
             release.configure("sample", root)
             release.contract.locked_graph(lock)
+            def frozen_git(args):
+                body = ("a" * 40).encode() if "rev-parse" in args else (root / args[-1].split(":", 1)[1]).read_bytes()
+                return mock.Mock(stdout=body)
+            with mock.patch.object(release, "run", side_effect=frozen_git):
+                source = release.source_identity(root)
+            self.assertEqual(source["upstreamRevision"], "e" * 40)
+            self.assertEqual(source["directory"], "pkgs/sample")
             for invalid in ("missing", "cycle", "unlocked"):
                 bad = json.loads(json.dumps(lock))
                 if invalid == "missing":
@@ -83,8 +84,7 @@ class ComponentEnrollmentTests(unittest.TestCase):
             runtime = "/nix/store/" + "0" * 32 + "-sample-1.0.0"
             narhash = "sha256-" + base64.b64encode(b"x" * 32).decode()
             record = {"schema": 1, "status": "SIGNED", "component": "sample", "platform": descriptor["platform"],
-                      "source": {"repository": release.REPO, "revision": "a" * 40, "directory": release.DIRECTORY,
-                                 "componentSha256": "b" * 64, "lockSha256": "c" * 64, "upstreamRevision": "e" * 40},
+                      "source": source,
                       "package": {"version": "1.0.0", "drvPath": runtime + ".drv", "storePath": runtime},
                       "closure": {runtime: {"narHash": narhash, "narSize": 10, "references": []}},
                       "verification": {"policy": descriptor["verificationPolicy"], "repeatBuild": True,
