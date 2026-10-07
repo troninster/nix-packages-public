@@ -1,0 +1,35 @@
+name: Symphony component build proof
+
+on:
+  pull_request:
+    paths:
+      - 'pkgs/symphony-ts/**'
+      - 'scripts/build-symphony-component'
+      - 'tests/test_symphony_component.py'
+      - '.github/workflows/symphony-component.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Verify independent Symphony component
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check Symphony component contracts
+        run: python3 -m unittest discover -s tests -p test_symphony_component.py -v
+
+      - name: Check, rebuild and smoke the component
+        run: ./scripts/build-symphony-component

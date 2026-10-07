@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target='./pkgs/symphony-ts#symphony-ts'
+nix_flags=(
+  --no-update-lock-file
+  --no-write-lock-file
+  --print-build-logs
+  --cores "${NIX_BUILD_CORES:-1}"
+  --max-jobs "${NIX_MAX_JOBS:-1}"
+)
+
+nix flake check ./pkgs/symphony-ts "${nix_flags[@]}" >&2
+runtime="$(nix build "${nix_flags[@]}" --no-link --print-out-paths "$target")"
+if ! nix build "${nix_flags[@]}" --rebuild --keep-failed --no-link "$target" >&2; then
+  if [[ -d "$runtime.check" ]]; then
+    diff -qr --no-dereference -- "$runtime" "$runtime.check" >&2 || true
+  fi
+  exit 1
+fi
+
+test ! -e "$runtime/lib/symphony-ts/node_modules/.modules.yaml"
+test ! -e "$runtime/lib/symphony-ts/node_modules/.pnpm-workspace-state-v1.json"
+"$runtime/bin/symphony" --help | grep -Fq symphony
+printf '%s\n' "$runtime"
