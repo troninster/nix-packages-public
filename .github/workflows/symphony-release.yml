@@ -12,6 +12,14 @@ on:
         description: 'Exact approved main ancestor; empty captures current main'
         required: false
         type: string
+      origin_ready_run:
+        description: 'Publication-only recovery: exact original READY run ID'
+        required: false
+        type: string
+      origin_ready_attempt:
+        description: 'Publication-only recovery: exact original READY attempt'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -32,7 +40,7 @@ jobs:
   build:
     name: Build and repeat the frozen Symphony component
     needs: contracts
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'troninster/nix-packages-public' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'troninster/nix-packages-public' && github.ref == 'refs/heads/main' && inputs.origin_ready_run == '' && inputs.origin_ready_attempt == '' }}
     runs-on: ubuntu-latest
     outputs:
       source_revision: ${{ steps.source.outputs.revision }}
@@ -224,3 +232,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/tools/symphony-release.py publish "$RUNNER_TEMP/symphony-ready"
+
+  recover-publish:
+    name: Recover publication of the exact original cold proof
+    needs: contracts
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'troninster/nix-packages-public' && github.ref == 'refs/heads/main' && (inputs.origin_ready_run != '' || inputs.origin_ready_attempt != '') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: symphony-component-catalog
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted recovery publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Authenticate original Actions proof and resume immutable publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGIN_READY_RUN: ${{ inputs.origin_ready_run }}
+          ORIGIN_READY_ATTEMPT: ${{ inputs.origin_ready_attempt }}
+        run: python3 trusted/tools/symphony-release.py recover-publish "$ORIGIN_READY_RUN" "$ORIGIN_READY_ATTEMPT" "$RUNNER_TEMP/symphony-origin-ready"
