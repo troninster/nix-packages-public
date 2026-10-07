@@ -224,7 +224,7 @@ jobs:
             accept-flake-config = true
 
       - name: Configure Cachix
-        if: ${{ env.CACHIX_CACHE_NAME != '' && env.CACHIX_AUTH_TOKEN != '' }}
+        if: ${{ env.CACHIX_CACHE_NAME != '' && env.CACHIX_AUTH_TOKEN != '' && (matrix.package != 'symphony-ts' || inputs.source_revision != '') }}
         uses: cachix/cachix-action@v17
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
@@ -253,8 +253,8 @@ jobs:
         if: ${{ matrix.package == 'hermes-agent' }}
         run: sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /nix/ci-artifacts
 
-      - name: Verify BB and Symphony runtime reproducibility before publishing
-        if: ${{ inputs.source_revision == '' && (matrix.package == 'bb-ide' || matrix.package == 'symphony-ts') }}
+      - name: Verify BB runtime reproducibility before publishing
+        if: ${{ inputs.source_revision == '' && matrix.package == 'bb-ide' }}
         run: |
           set -euo pipefail
           python3 -m unittest discover -s pkgs/bb-ide -p test_runtime_reproducibility.py -v
@@ -286,8 +286,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+      - name: Verify the independent Symphony component without cache publication
+        if: ${{ inputs.source_revision == '' && matrix.package == 'symphony-ts' }}
+        env:
+          CACHIX_AUTH_TOKEN: ''
+          REQUIRE_CACHIX_PUSH: '0'
+        run: ./scripts/build-symphony-component
+
       - name: Build package
-        if: ${{ inputs.source_revision == '' }}
+        if: ${{ inputs.source_revision == '' && matrix.package != 'symphony-ts' }}
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
 
       - name: Repair the exact historical package cache
@@ -309,7 +316,7 @@ jobs:
             "$RUNNER_TEMP/repair-build-package" "$PACKAGE"
 
       - name: Check package reproducibility
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.check_reproducibility }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.check_reproducibility && (matrix.package != 'symphony-ts' || inputs.source_revision != '') }}
         run: nix build --rebuild --no-link --print-build-logs --cores 1 --max-jobs 1 ".#${{ matrix.package }}"
 
       - name: Upload verified Hermes release

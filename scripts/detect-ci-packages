@@ -229,6 +229,25 @@ sys.exit(0 if old_count == new_count == 1 and old == new else 1)
 PY
 }
 
+is_exact_symphony_handoff() {
+  # This one-time reviewed handoff is not a general shared-file exemption.
+  local file="$1" old_expected new_expected old_actual new_actual
+  case "$file" in
+    scripts/update-upstream-inputs)
+      old_expected=758a21acd9f5208628c3fc4141b729341fa2523cfa53802f23d1a45abdc8cda3
+      new_expected=937588c8e18bd5fa736a6524011c098e9f1fb718fbff1898df0925550205e835
+      ;;
+    .github/workflows/ci.yml)
+      old_expected=5f672c9470ca9db8fe05d936b5c628a98610ad95e32828e4ef3bd289e9b1cdf8
+      new_expected=36066ae06173c2ac1a71edf718915c438fc890b3b0e6725ff5e8a138fb93dc93
+      ;;
+    *) return 1 ;;
+  esac
+  old_actual="$(git show "${base}:${file}" | sha256sum)" || return 1
+  new_actual="$(git show "${head}:${file}" | sha256sum)" || return 1
+  [[ "${old_actual%% *}" == "$old_expected" && "${new_actual%% *}" == "$new_expected" ]]
+}
+
 classify_file() {
   local file="$1"
   local local_package
@@ -280,6 +299,10 @@ classify_file() {
       ;;
     .github/workflows/update-upstreams.yml | scripts/update-upstream-inputs)
       run_checks="true"
+      if is_exact_symphony_handoff "$file"; then
+        add_package "symphony-ts"
+        return
+      fi
       add_package "archon"
       add_package "camofox-browser"
       add_package "codex"
@@ -294,7 +317,7 @@ classify_file() {
       add_package "supabase-cli"
       add_package "symphony-ts"
       ;;
-    scripts/build-symphony-component | tests/test_symphony_component.py | .github/workflows/symphony-component.yml | tools/symphony-release.py | tests/test_symphony_release.py | .github/workflows/symphony-release.yml)
+    scripts/build-symphony-component | tests/test_symphony_component.py | .github/workflows/symphony-component.yml | tools/symphony-release.py | tests/test_symphony_release.py | .github/workflows/symphony-release.yml | tools/symphony-source.py | tools/symphony-reconcile.py | tests/test_symphony_source.py | tests/test_symphony_reconcile.py | .github/workflows/symphony-source.yml)
       run_checks="true"
       add_package "symphony-ts"
       ;;
@@ -321,6 +344,9 @@ classify_file() {
       ;;
     .github/workflows/ci.yml | scripts/detect-ci-packages)
       run_checks="true"
+      if is_exact_symphony_handoff "$file"; then
+        add_package "symphony-ts"
+      fi
       ;;
     .github/dependabot.yml)
       ;;

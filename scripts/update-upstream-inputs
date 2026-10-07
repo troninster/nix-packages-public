@@ -1045,60 +1045,9 @@ block_deepseek_harness() {
 }
 
 block_symphony_ts() {
-  # symphony-ts is the owner's own fork, so it is followed on every run rather
-  # than on a weekly cadence: the point of the pin is that a push to the fork
-  # reaches this host. There is no release tag and no npm distribution, so the
-  # pin is the fork's main-branch head.
-  local current_rev latest_rev latest_version new_src_hash new_deps_hash
-
-  current_rev="$(nix_string_value rev "$symphony_ts_package_file")"
-  if [[ -z "$current_rev" ]]; then
-    echo "failed to read symphony-ts rev from $symphony_ts_package_file" >&2
-    return 1
-  fi
-
-  latest_rev="$(git ls-remote https://github.com/TarasKosh/symphony-ts.git refs/heads/main | cut -f1)"
-  if [[ -z "$latest_rev" ]]; then
-    echo "failed to query symphony-ts main head" >&2
-    return 1
-  fi
-
-  if [[ "$latest_rev" == "$current_rev" ]]; then
-    echo "symphony-ts is current (${current_rev:0:12})."
-    return 0
-  fi
-
-  echo "Updating symphony-ts ${current_rev:0:12} -> ${latest_rev:0:12}"
-
-  new_src_hash="$(nix store prefetch-file --json --unpack \
-    "https://github.com/TarasKosh/symphony-ts/archive/${latest_rev}.tar.gz" \
-    | nix run nixpkgs#jq -- -r .hash)"
-  if [[ -z "$new_src_hash" ]]; then
-    echo "failed to prefetch symphony-ts source" >&2
-    return 1
-  fi
-
-  replace_nix_string rev "$latest_rev" "$symphony_ts_package_file"
-  replace_nix_string hash "$new_src_hash" "$symphony_ts_package_file"
-
-  # The pnpm dependency hash has no prefetch tool the way npm does, so it is
-  # discovered from the fixed-output derivation mismatch: set a wrong hash on
-  # purpose, build, and read the expected value out of the failure.
-  replace_nix_string_nth 2 hash "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" "$symphony_ts_package_file"
-  new_deps_hash="$(nix build ".#symphony-ts" --no-link 2>&1 \
-    | sed -n 's#^[[:space:]]*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\)$#\1#p' | head -n 1)"
-  if [[ -z "$new_deps_hash" ]]; then
-    echo "failed to discover symphony-ts pnpm dependency hash" >&2
-    return 1
-  fi
-  replace_nix_string_nth 2 hash "$new_deps_hash" "$symphony_ts_package_file"
-
-  latest_version="$(nix run nixpkgs#curl -- -fsSL \
-    "https://raw.githubusercontent.com/TarasKosh/symphony-ts/${latest_rev}/package.json" \
-    | nix run nixpkgs#jq -- -r .version)"
-  if [[ -n "$latest_version" && "$latest_version" != "null" ]]; then
-    replace_nix_string version "$latest_version" "$symphony_ts_package_file"
-  fi
+  # Dedicated symphony-source.yml owns this fork pin and its component gate.
+  # Keep the legacy selection/transaction shape unchanged for the other lanes.
+  echo "symphony-ts source writes handed off to the dedicated source lane."
 }
 
 case "$update_mode" in
