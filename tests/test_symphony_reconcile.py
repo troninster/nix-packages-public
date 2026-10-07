@@ -103,6 +103,11 @@ class SymphonyReconcileTests(unittest.TestCase):
             self.assertEqual(reconcile.wake_factory("e" * 40, new_source=True), "factory-dispatched")
             self.assertEqual(json.loads(dispatch.call_args.kwargs["data"]),
                              {"ref": "main", "inputs": {"source_revision": "e" * 40}})
+        with mock.patch.object(release, "api", return_value={"total_count": 2, "workflow_runs": [run]}), \
+                mock.patch.object(release, "run") as dispatch:
+            with self.assertRaisesRegex(RuntimeError, "Incomplete active factory"):
+                reconcile.wake_factory("e" * 40)
+            dispatch.assert_not_called()
 
     def test_handoff_routes_only_symphony_but_unknown_shared_updater_edits_keep_full_gates(self):
         with tempfile.TemporaryDirectory() as temporary:
