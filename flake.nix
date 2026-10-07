@@ -13,7 +13,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     codex = {
-      url = "github:openai/codex/rust-v0.160.1";
+      url = "github:openai/codex/rust-v0.161.0";
       # Route codex's transitive rust-overlay input through our own (declared below) so a
       # single `nix flake update rust-overlay` refreshes both. Otherwise codex stays pinned
       # to whatever rust-overlay rev its upstream flake.lock happened to record, and the
@@ -136,6 +136,8 @@
       "nucleo-0.5.0" = "sha256-Hm4SxtTSBrcWpXrtSqeO0TACbUxq3gizg1zD/6Yw/sI=";
       "nucleo-matcher-0.3.1" = "sha256-Hm4SxtTSBrcWpXrtSqeO0TACbUxq3gizg1zD/6Yw/sI=";
       "process_security_environment_spec-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
+      "rmcp-3.3.0" = "sha256-+VPObwPVKUy28cAd23RuorPAB9owaMTK0MDxuWHZdWQ=";
+      "rmcp-macros-3.3.0" = "sha256-+VPObwPVKUy28cAd23RuorPAB9owaMTK0MDxuWHZdWQ=";
       "runfiles-0.1.0" = "sha256-uJpVLcQh8wWZA3GPv9D8Nt43EOirajfDJ7eq/FB+tek=";
       "sandbox_spec-0.8.0" = "sha256-XUkT2R+RYk9WIqgKnmIAagNW4xOTyp4bWHmQL1iznHw=";
       "tokio-tungstenite-0.28.0" = "sha256-V1xmnrfRWOcZZogelZEA4vvyMj2awCfHVA5/glQ6KAI=";
