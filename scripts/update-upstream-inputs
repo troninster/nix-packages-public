@@ -99,6 +99,10 @@ rm -f "$changed_packages_file"
 #   OK | SKIPPED | FAILED
 declare -A block_status=()
 
+if [[ -d components ]]; then
+  python3 tools/component-contract.py list >/dev/null
+fi
+
 # run_block <name> <function> <touched-file...>
 #   Runs the supplied block while snapshotting its declared files. A failed
 #   block is rolled back and logged; the other checks still run so the final
@@ -112,6 +116,16 @@ run_block() {
   local -a backup_files=()
   local file backup restore_failed
   local rc=0
+
+  # Registered components have exactly one source writer, in the dedicated lane.
+  if [[ -d components ]]; then
+    for file in "${touched_files[@]}"; do
+      if [[ "$file" == pkgs/*/default.nix ]] && python3 tools/component-contract.py has "$(basename "$(dirname "$file")")"; then
+        echo "Registered component source is owned by the dedicated lane."
+        return 0
+      fi
+    done
+  fi
 
   for file in "${touched_files[@]}"; do
     backup="$(mktemp)"

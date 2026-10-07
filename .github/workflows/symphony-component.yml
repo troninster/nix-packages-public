@@ -1,9 +1,12 @@
-name: Symphony component build proof
+name: Enrolled component build proof
 
 on:
   pull_request:
     paths:
-      - 'pkgs/symphony-ts/**'
+      - 'components/**'
+      - 'tools/component-*.py'
+      - 'scripts/build-component'
+      - 'tests/test_component*.py'
       - 'scripts/build-symphony-component'
       - 'tests/test_symphony_component.py'
       - '.github/workflows/symphony-component.yml'
@@ -13,8 +16,22 @@ permissions:
   contents: read
 
 jobs:
+  registry:
+    runs-on: ubuntu-latest
+    outputs:
+      components: ${{ steps.registry.outputs.components }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: registry
+        run: echo "components=$(python3 tools/component-contract.py list)" >> "$GITHUB_OUTPUT"
   build:
-    name: Verify independent Symphony component
+    needs: registry
+    strategy:
+      matrix:
+        component: ${{ fromJSON(needs.registry.outputs.components) }}
+    name: Verify independent component
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,4 +49,4 @@ jobs:
         run: python3 -m unittest discover -s tests -p test_symphony_component.py -v
 
       - name: Check, rebuild and smoke the component
-        run: ./scripts/build-symphony-component
+        run: bash ./scripts/build-component "${{ matrix.component }}"

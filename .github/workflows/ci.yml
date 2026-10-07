@@ -223,8 +223,20 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = true
 
+      - name: Select an enrolled independent component
+        id: component
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          python3 tools/component-contract.py list >/dev/null
+          if python3 tools/component-contract.py has "$PACKAGE"; then
+            echo 'enrolled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enrolled=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure Cachix
-        if: ${{ env.CACHIX_CACHE_NAME != '' && env.CACHIX_AUTH_TOKEN != '' && (matrix.package != 'symphony-ts' || inputs.source_revision != '') }}
+        if: ${{ env.CACHIX_CACHE_NAME != '' && env.CACHIX_AUTH_TOKEN != '' && (steps.component.outputs.enrolled != 'true' || inputs.source_revision != '') }}
         uses: cachix/cachix-action@v17
         with:
           name: ${{ env.CACHIX_CACHE_NAME }}
@@ -286,15 +298,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      - name: Verify the independent Symphony component without cache publication
-        if: ${{ inputs.source_revision == '' && matrix.package == 'symphony-ts' }}
+      - name: Verify the enrolled independent component without cache publication
+        if: ${{ inputs.source_revision == '' && steps.component.outputs.enrolled == 'true' }}
         env:
           CACHIX_AUTH_TOKEN: ''
           REQUIRE_CACHIX_PUSH: '0'
-        run: ./scripts/build-symphony-component
+        run: bash ./scripts/build-component "${{ matrix.package }}"
 
       - name: Build package
-        if: ${{ inputs.source_revision == '' && matrix.package != 'symphony-ts' }}
+        if: ${{ inputs.source_revision == '' && steps.component.outputs.enrolled != 'true' }}
         run: NIX_BUILD_MONITOR=1 ./scripts/build-package "${{ matrix.package }}"
 
       - name: Repair the exact historical package cache

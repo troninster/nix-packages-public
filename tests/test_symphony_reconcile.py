@@ -12,17 +12,18 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = "af143cd658d6d09b1848ab6a2a95764ecdc391de"
-SPEC = importlib.util.spec_from_file_location("symphony_reconcile", ROOT / "tools/symphony-reconcile.py")
+BASE = "b10fc974f23f479e3334ea1526833c4d55745876"
+SPEC = importlib.util.spec_from_file_location("symphony_reconcile", ROOT / "tools/component-reconcile.py")
 reconcile = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reconcile)
+reconcile.configure("symphony-ts")
 adapter, release = reconcile.source_adapter, reconcile.release
 
 
 class SymphonyReconcileTests(unittest.TestCase):
     def setUp(self):
         environment = mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
-            "GITHUB_WORKFLOW_SHA": "a" * 40, "GITHUB_WORKFLOW_REF": adapter.WORKFLOW})
+            "GITHUB_WORKFLOW_SHA": "a" * 40, "GITHUB_WORKFLOW_REF": reconcile.source_engine.WORKFLOW})
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -33,14 +34,14 @@ class SymphonyReconcileTests(unittest.TestCase):
                 destination = fresh / path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes((ROOT / path).read_bytes())
-            baseline = {"revision": "e" * 40, "componentSha256": adapter.component_digest(fresh)}
+            baseline = {"revision": "e" * 40, "componentSha256": reconcile.source_engine.component_digest(fresh)}
             original = (fresh / adapter.RECIPE).read_text()
             selected = {**adapter.pins(original), "rev": "f" * 40}
             updated = adapter.apply_pins(original, selected)
             prepared_digest = release.sha({path: hashlib.sha256(updated.encode() if path == adapter.RECIPE
                 else (fresh / path).read_bytes()).hexdigest() for path in release.FILES})
             plan = {"schema": 1, "mode": "PREPARED", "baselineComponentSha256": baseline["componentSha256"],
-                "componentSha256": prepared_digest, "pins": selected, "package": {}, "proof": adapter.receipt()}
+                "componentSha256": prepared_digest, "pins": selected, "package": {}, "proof": reconcile.source_engine.receipt()}
 
             def git(args):
                 self.assertEqual(args[0], "git")
@@ -86,12 +87,15 @@ class SymphonyReconcileTests(unittest.TestCase):
     def test_pending_factory_and_six_hour_retry_cooldown_do_not_storm_dispatches(self):
         run = {"repository": {"full_name": release.REPO}, "head_repository": {"full_name": release.REPO},
             "head_branch": "main", "event": "workflow_dispatch", "status": "in_progress",
+            "display_title": "component:symphony-ts",
             "created_at": datetime.now(timezone.utc).isoformat()}
 
         def receipts(endpoint):
             if f"&status={run['status']}&" in endpoint:
-                # More than a page of completed history must not block retries.
-                return {"total_count": 101 if run["status"] == "completed" else 1, "workflow_runs": [run]}
+                # Completed lookup is a six-hour window, not lifetime history.
+                if run["status"] == "completed":
+                    self.assertIn("&created=", endpoint)
+                return {"total_count": 1, "workflow_runs": [run]}
             return {"total_count": 0, "workflow_runs": []}
 
         with mock.patch.object(release, "api", side_effect=receipts), \
@@ -102,7 +106,7 @@ class SymphonyReconcileTests(unittest.TestCase):
             dispatch.assert_not_called()
             self.assertEqual(reconcile.wake_factory("e" * 40, new_source=True), "factory-dispatched")
             self.assertEqual(json.loads(dispatch.call_args.kwargs["data"]),
-                             {"ref": "main", "inputs": {"source_revision": "e" * 40}})
+                             {"ref": "main", "inputs": {"component": "symphony-ts", "source_revision": "e" * 40}})
         with mock.patch.object(release, "api", return_value={"total_count": 2, "workflow_runs": [run]}), \
                 mock.patch.object(release, "run") as dispatch:
             with self.assertRaisesRegex(RuntimeError, "Incomplete active factory"):
@@ -160,22 +164,29 @@ class SymphonyReconcileTests(unittest.TestCase):
 
     def test_default_off_workflow_separates_candidate_and_write_authority(self):
         workflow = (ROOT / ".github/workflows/symphony-source.yml").read_text()
-        self.assertIn("vars.SYMPHONY_SOURCE_LANE == '1'", workflow)
+        self.assertIn("vars.COMPONENT_SOURCE_UPDATES == '1'", workflow)
         self.assertIn("27 */6 * * *", workflow)
-        self.assertEqual(workflow.count("ref: ${{ github.workflow_sha }}"), 2)
-        prepare, publish = workflow.split("  prepare:\n", 1)[1].split("  publish:\n", 1)
+        self.assertIn("fail-fast: false", workflow)
+        self.assertIn("uses: ./.github/workflows/component-source-worker.yml", workflow)
+        worker = (ROOT / ".github/workflows/component-source-worker.yml").read_text()
+        self.assertEqual(worker.count("ref: ${{ github.workflow_sha }}"), 2)
+        prepare, publish = worker.split("  prepare:\n", 1)[1].split("  publish:\n", 1)
+        self.assertIn("needs: prepare", publish)
         self.assertNotIn("contents: write", prepare)
         self.assertNotIn("actions: write", prepare)
         self.assertIn("contents: write", publish)
         self.assertIn("actions: write", publish)
         self.assertNotIn("Install Nix", publish)
-        self.assertNotIn("secrets.", workflow)
+        self.assertNotIn("secrets.", workflow + worker)
+        self.assertNotIn("secrets: inherit", workflow + worker)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
-        self.assertIn("run: ./scripts/build-symphony-component", ci)
-        component_step = ci.split("      - name: Verify the independent Symphony component without cache publication\n", 1)[1].split("      - name: Build package\n", 1)[0]
+        self.assertIn('run: bash ./scripts/build-component "${{ matrix.package }}"', ci)
+        component_step = ci.split("      - name: Verify the enrolled independent component without cache publication\n", 1)[1].split("      - name: Build package\n", 1)[0]
+        self.assertIn("id: component", ci.split("  build:", 1)[1])
+        self.assertNotIn("id: component", ci.split("  build:", 1)[0])
         self.assertIn("CACHIX_AUTH_TOKEN: ''", component_step)
         self.assertIn("REQUIRE_CACHIX_PUSH: '0'", component_step)
-        self.assertIn("inputs.source_revision == '' && matrix.package != 'symphony-ts'", ci)
+        self.assertIn("inputs.source_revision == '' && steps.component.outputs.enrolled != 'true'", ci)
         self.assertIn('"$RUNNER_TEMP/repair-build-package" "$PACKAGE"', ci)
 
 

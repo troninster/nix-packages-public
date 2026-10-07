@@ -1,5 +1,39 @@
 # Symphony release pilot contract v1
 
+## 2026-10-07 amendment: trusted descriptor enrollment
+
+The shared factory reads `components/<component>.json` from its frozen trusted
+workflow checkout. Only `components/symphony-ts.json` is admitted in production;
+the second component exists only in isolated tests. The descriptor declares the
+repository, directory, platform, package attribute/name, verification policy,
+exact source-file graph, reviewed package-owned source adapter and CLI smoke
+data. It cannot select credentials or disable mandatory verification gates.
+
+`tools/component-release.py`, `tools/component-source.py`,
+`tools/component-reconcile.py` and `scripts/build-component` are shared engines;
+historical Symphony entry points delegate to them. Existing workflow paths stay
+stable for native historical run/artifact recovery. Adapters supply upstream
+provenance, source selection and pure pin application. The common preparation
+engine, not the adapter, requires candidate build/repeat/smoke before a separate
+privileged publisher may reapply pins on fresh main. Each component has its own
+prepare-to-publish dependency, concurrency and native factory liveness hint.
+
+Descriptors are trusted admission data, not new record fields or digest inputs.
+Symphony retains the exact three paths, schema 1 policy and encoding below.
+The published c77 READY record and signed assets remain verbatim: no identity,
+provenance, catalog-history rewrite or repack. Normal own lock-v7 graphs may have
+additional fully locked reachable inputs, without a host graph override or
+fixed two-node restriction. Upstream revision is reviewed producer-adapter
+provenance; consumers bind exact source bytes rather than reparsing all recipes.
+
+Registry membership excludes the legacy source writer. The dedicated source
+workflow uses separate read-only preparation and privileged publication jobs.
+`COMPONENT_SOURCE_UPDATES` is default OFF, with no inheritance from the old
+Symphony flag. Enabling it remains a separate coordinated handoff.
+
+The following foundation checkpoint description is historical; its schema and
+Symphony-specific identity projection remain unchanged.
+
 This is the first source/shadow checkpoint, not a published READY release.
 Only Symphony TS is in scope. Its component root is `pkgs/symphony-ts` and
 owns its Nixpkgs lock; the host must not override that input through `follows`.
