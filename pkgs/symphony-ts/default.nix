@@ -24,8 +24,8 @@ stdenv.mkDerivation (finalAttrs: {
   src = fetchFromGitHub {
     owner = "TarasKosh";
     repo = "symphony-ts";
-    rev = "b7f99b85ac8385ffd45683afc56f19837f6b4111";
-    hash = "sha256-B1F3HRoSi1eja8z/4NQcxDK8qUmq/4gPrX+SQwODO6A=";
+    rev = "60753c615e9e52d18471c62bac6f56220e3644af";
+    hash = "sha256-Z28cX+RZe2LRD/k+k/t+eEa7lSdxkG09+nYuHQxHG1U=";
   };
 
   # pnpm, not npm: the project declares packageManager pnpm@10 and ships only a
