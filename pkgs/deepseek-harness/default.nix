@@ -26,8 +26,8 @@
 let
   # The upstream workspace uses pnpm 11; the collection's older nixpkgs only
   # supplies pnpm 10. Use the matching upstream SQLite-aware dependency hooks.
-  pnpmVersion = "11.7.0";
-  pnpmHash = "sha256-3q+n7JihIYtqBHKJuS++I5XB4i00lbtxFlMBMhjuFe4=";
+  pnpmVersion = "11.28.5";
+  pnpmHash = "sha256-HvTkR6aHE2VgZPPxdMD0RxmWCgQ6P+IpkWnQjPHb+O4=";
   pnpm11 = (pnpm_10.override {
     version = pnpmVersion;
     hash = pnpmHash;
@@ -68,16 +68,16 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "deepseek-harness";
-  version = "0.2.1-alpha.1";
+  version = "0.2.1-alpha.2";
 
   src = fetchFromGitHub {
     owner = "deepseek-ai";
     repo = "deepseek-harness";
-    rev = "5badb15009ae1756c3afe0ae0cef1faafc290ccc";
-    hash = "sha256-/mScgSeh7/1HdIeWGAnxkzlXTjZsxscpnWkwnhR8hsU=";
+    rev = "d743267388641bc76f17c45ce8b4c231aed1d32c";
+    hash = "sha256-MxxwtEPBG8SK6Rw5CqGalnJ5FWAygzVxklCQab5mpbU=";
   };
 
-  pnpmDepsHash = "sha256-VQu50lXsV7vFT0RlEdS2clzgOUnNISrNznS+7P4QNIM=";
+  pnpmDepsHash = "sha256-eBvH3aoMKSr4V82grmcAsjGeZhjS0/5tiAuO0pubNnM=";
   pnpmInstallFlags = [ "--force=false" ];
   pnpmDeps = pnpmHooks.fetchPnpmDeps {
     inherit (finalAttrs) pname version src pnpmInstallFlags;
