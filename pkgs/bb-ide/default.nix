@@ -23,11 +23,11 @@ stdenv.mkDerivation (finalAttrs: {
   src = fetchFromGitHub {
     owner = "get-bb";
     repo = "bb";
-    rev = "dd1694f144d750f13fa377cf77c0f70d26cd7f5e";
-    hash = "sha256-WkPzYe/6nwexlr7fkwFrDQd9xI+VkTzprQa40xH5XoE=";
+    rev = "01affc197dc621cddc7343e09b1c5c10a5b9efcb";
+    hash = "sha256-D4aWkqaW3ZeiH86bGKYZH8zqBErTxtWfCrTkXeWKk4E=";
   };
 
-  pnpmDepsHash = "sha256-Lw2RwvFZ1g+X2MCS2HCvnLgk505Kx/XStsuhxfpMkcY=";
+  pnpmDepsHash = "sha256-uWeZzCnEgP530trhqeBJDAN3f/EpFjZzYb8URg77Nwc=";
   electronVersion = "44.3.0";
   electronHash = "sha256-i0m5791zwPRn7cPBzVZ4OSw4TM8iTzT/VBefc24vOEs=";
   electronRuntime = electron_39-bin.overrideAttrs (old: {
