@@ -193,7 +193,7 @@ jobs:
           fetch-depth: 1
 
       - name: Download Codex publication artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-update-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/codex-update
@@ -408,7 +408,7 @@ jobs:
           fetch-depth: 1
 
       - name: Download GitHub CLI publication artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: github-cli-update-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/github-cli-update
@@ -564,7 +564,7 @@ jobs:
           fetch-depth: 1
 
       - name: Download Camofox publication artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: camofox-update-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/camofox-update
