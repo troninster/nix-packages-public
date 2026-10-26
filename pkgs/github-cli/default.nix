@@ -7,13 +7,13 @@
 
 githubCliGoModule rec {
   pname = "github-cli";
-  version = "2.103.2";
+  version = "2.103.3";
 
   src = fetchFromGitHub {
     owner = "cli";
     repo = "cli";
     rev = "v${version}";
-    hash = "sha256-GI6+/umymZvRJ/+p1ydhjM4PjrdhGnq6qsD6TeSLnE0=";
+    hash = "sha256-L18wWb8cPWscylx3C+uqE7/2bJt2ApE3ldQh6tXwSKk=";
   };
 
   vendorHash = "sha256-e9E2iTwF8kYNgW7Vs5upQBD2VT2lJ4dZcUDUk+igq/Y=";
