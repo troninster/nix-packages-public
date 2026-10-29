@@ -46,9 +46,9 @@ let
   camofoxBrowserRev = "39c82094013480b373df6600d44c7f036f58356e";
   camofoxBrowserHash = "sha256-ZB9K8bZxvyW+wodLMFGvAY2FlyJX8etQ4Wu8vKJFbLs=";
   camofoxBrowserNpmDepsHash = "sha256-A99erVueIRMjQoVFmt8kQ4Bru9loeXZmP2mH8Zz8K2I=";
-  camoufoxEngineReleaseTag = "v156.0.1-beta.39";
-  camoufoxEngineVersion = "156.0.1-beta.39";
-  camoufoxEngineHash = "sha256-oTlYKwA5NSVnFSgQi9uAn/Q00qmj7Fvs+KroErcMPPg=";
+  camoufoxEngineReleaseTag = "v158.0.1-beta.41";
+  camoufoxEngineVersion = "158.0.1-beta.41";
+  camoufoxEngineHash = "sha256-Py6x0EUfpY5F5D5V9eYYFWUGl5GuYMBXTwzrHwE0HDM=";
   camoufoxEngineMetadata =
     let
       match = builtins.match "([0-9.]+)-(.+)" camoufoxEngineVersion;
