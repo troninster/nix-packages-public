@@ -10,17 +10,17 @@
 # Vendored upstream: pinned FreeLLMAPI source with no local source changes.
 buildNpmPackage rec {
   pname = "freellmapi";
-  version = "0.16.20";
+  version = "0.16.21";
 
   src = fetchFromGitHub {
     owner = "tashfeenahmed";
     repo = "freellmapi";
-    rev = "a765f678710cbf610f9830c044dc3c8d3c7a35a3";
-    hash = "sha256-yNZGK76SXaiicdgV2Yv+VP5pr+KU1j+JtTxOfWVpOPI=";
+    rev = "8167bc20c9c3ea988085a2a7f9803d3ac575b7cc";
+    hash = "sha256-F89IyoaTWhr90cGbiiE/dZIT9QMBa+kGa5MjhRbWJSI=";
   };
 
   nodejs = nodejs_22;
-  npmDepsHash = "sha256-hvf12Gw+OVN9WikNg//x5tRZGK4Cgf5jkPLvDAFdJYA=";
+  npmDepsHash = "sha256-7aDkbGsTixu/OGm72PppGIbYvgGI7uKSzEoKFzDbaNU=";
 
   # Upstream's root build now includes a CLI workspace. This package exposes
   # the existing server/client runtime only, so keep those two builds explicit.
