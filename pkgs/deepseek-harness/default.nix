@@ -68,16 +68,16 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "deepseek-harness";
-  version = "0.2.2-rc.1";
+  version = "0.2.2-rc.2";
 
   src = fetchFromGitHub {
     owner = "deepseek-ai";
     repo = "deepseek-harness";
-    rev = "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db";
-    hash = "sha256-pzSBQbLwcT/wnCg4ugWq7YmRngCaFOiKVCjekI5aKa0=";
+    rev = "ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c";
+    hash = "sha256-lbRmFifO6+8YKn8kaR7gQzKeUQh9YBFu9wH/dWJ+3MA=";
   };
 
-  pnpmDepsHash = "sha256-l0S53eW/lhv730VhFC/fyTmjtVM7ZTLvNemwhE6ZNZA=";
+  pnpmDepsHash = "sha256-+4M149AwEiQR6PpMC6bzn3VjfA61wg1S842AegTJpq0=";
   pnpmInstallFlags = [ "--force=false" ];
   pnpmDeps = pnpmHooks.fetchPnpmDeps {
     inherit (finalAttrs) pname version src pnpmInstallFlags;
