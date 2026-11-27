@@ -10,13 +10,13 @@
 # Vendored upstream: pinned FreeLLMAPI source with no local source changes.
 buildNpmPackage rec {
   pname = "freellmapi";
-  version = "0.16.46";
+  version = "0.16.47";
 
   src = fetchFromGitHub {
     owner = "tashfeenahmed";
     repo = "freellmapi";
-    rev = "3628cacf673907710a79870a549664dc00232dce";
-    hash = "sha256-Kh8Laicjrr8nrFjyeh6R8Kn9dJWoz4O4bJ3Gjba4ypo=";
+    rev = "52552414db81616ecd7210dbe3892b6cafd44131";
+    hash = "sha256-Pucj8gqszVZyAUghfwHhuaZf/zvMCYEufDpwSsfmfGQ=";
   };
 
   nodejs = nodejs_22;
